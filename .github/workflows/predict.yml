@@ -1,0 +1,63 @@
+name: 学習と予想の公開
+
+# 収集ジョブが終わるたび、および毎週金曜に走る。
+on:
+  workflow_run:
+    workflows: ["データ収集"]
+    types: [completed]
+  schedule:
+    - cron: "0 12 * * 5"
+  workflow_dispatch:
+    inputs:
+      test_start:
+        description: "検証開始日"
+        default: "2026-08-01"
+
+concurrency:
+  group: predict
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -q -r requirements.txt
+
+      - name: データ確認
+        id: check
+        run: |
+          if ! ls data/races.* >/dev/null 2>&1; then
+            echo "データがまだありません。収集ジョブを先に実行してください。" >> $GITHUB_STEP_SUMMARY
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 学習と検証
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          python scripts/train_and_publish.py \
+            --test-start "${{ inputs.test_start || '2026-08-01' }}" | tee /tmp/log.txt
+          { echo '### 検証結果'; echo '```'; tail -40 /tmp/log.txt; echo '```'; } >> $GITHUB_STEP_SUMMARY
+
+      - name: 公開
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          git diff --staged --quiet && echo "変更なし" && exit 0
+          git commit -m "予想を更新 $(date -u +%Y-%m-%dT%H:%M)"
+          git pull --rebase --autostash origin ${{ github.event.repository.default_branch }}
+          git push
