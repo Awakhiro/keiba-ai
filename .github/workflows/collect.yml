@@ -1,0 +1,68 @@
+name: データ収集
+
+# 手動実行と、6時間ごとの自動実行。
+# 1回の実行で集めきれなくても、次の実行が続きから再開する。
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "収集開始日"
+        default: "2025-01-01"
+      end:
+        description: "収集終了日"
+        default: "2026-09-13"
+      minutes:
+        description: "1回あたりの実行時間(分)"
+        default: "300"
+  schedule:
+    - cron: "0 */6 * * *"
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -q -r requirements.txt
+
+      - name: 収集
+        id: scrape
+        run: |
+          python scripts/scrape_chunk.py \
+            --start "${{ inputs.start || '2025-01-01' }}" \
+            --end   "${{ inputs.end   || '2026-09-13' }}" \
+            --minutes "${{ inputs.minutes || '300' }}" \
+            && echo "complete=true" >> $GITHUB_OUTPUT \
+            || { c=$?; [ $c -eq 75 ] && echo "complete=false" >> $GITHUB_OUTPUT || exit $c; }
+
+      - name: 保存
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet && echo "変更なし" && exit 0
+          git commit -m "データ収集 $(date -u +%Y-%m-%dT%H:%M)"
+          git pull --rebase --autostash origin ${{ github.ref_name }}
+          git push
+
+      - name: 進捗
+        run: |
+          if [ "${{ steps.scrape.outputs.complete }}" = "true" ]; then
+            echo "### 収集完了" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 途中まで完了。次回の実行で続きから。" >> $GITHUB_STEP_SUMMARY
+          fi
+          python -c "import json;s=json.load(open('data/state.json'));print('収集済み開催日',len(s['done_dates']))" >> $GITHUB_STEP_SUMMARY
