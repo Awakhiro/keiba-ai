@@ -26,6 +26,14 @@ from src.webexport import build_payload, write_site            # noqa: E402
 BETS = ["馬連", "馬単", "3連複", "3連単"]
 
 
+def as_table(df, index=True):
+    """tabulate が無い環境でも落ちないように整形する。"""
+    try:
+        return df.to_markdown(index=index)
+    except ImportError:
+        return "```\n" + df.to_string(index=index) + "\n```"
+
+
 def summarize_by_scope(ex):
     """S級のみ / A級以上 / 全レース で的中率と回収率を比べる。"""
     import numpy as np
@@ -58,6 +66,7 @@ def main():
     ap.add_argument("--ev", type=float, default=1.05)
     a = ap.parse_args()
 
+    os.makedirs("docs", exist_ok=True)   # 失敗しても公開ステップが転ばないように
     raw = load_table("data/races")
     pays = load_table("data/pays") if exists("data/pays") else pd.DataFrame()
 
@@ -66,38 +75,55 @@ def main():
           f"({data['date'].min().date()}〜{data['date'].max().date()})", flush=True)
 
     feat = build_features(data)
+
+    # 指定した検証期間にデータが無ければ、実データの末尾2か月に自動で寄せる
+    test_start = pd.Timestamp(a.test_start)
+    last = data["date"].max()
+    n_test = (data["date"] >= test_start).sum()
+    if n_test < 200:
+        fallback = (last - pd.Timedelta(days=60)).normalize()
+        print(f"指定された検証開始日 {test_start.date()} 以降のデータが {n_test}行しか"
+              f"ありません。{fallback.date()} 以降に切り替えます。")
+        test_start = fallback
+
     try:
-        pred, conf, _ = holdout(feat, a.test_start)
+        pred, conf, _ = holdout(feat, test_start)
     except ValueError as e:
         print(f"まだ学習できません: {e}")
-        print("収集が進めば自動で再実行されます。")
+        print(f"データ範囲: {data['date'].min().date()}〜{last.date()} "
+              f"/ {data['race_id'].nunique()}レース")
+        with open("docs/report.md", "w", encoding="utf-8") as f:
+            f.write(f"# 検証レポート\n\nまだ学習できていません: {e}\n")
         return
     summary, overall, grader, detail = evaluate(pred, conf)
     lam2, lam3 = fit_lambdas(pred)
-    ex = evaluate_exotics_real(pred, detail, pays, lam2=lam2, lam3=lam3)
+    if pays.empty:
+        print("払戻データがありません。連勝式の回収率は集計しません。")
+        ex = pd.DataFrame()
+    else:
+        ex = evaluate_exotics_real(pred, detail, pays, lam2=lam2, lam3=lam3)
     scope = summarize_by_scope(ex) if not ex.empty else pd.DataFrame()
 
-    os.makedirs("docs", exist_ok=True)
     payload = build_payload(pred, grader=grader, lam2=lam2, lam3=lam3,
                             min_grade=a.min_grade, ev_threshold=a.ev,
-                            meta={"date": f"{a.test_start} 以降の検証",
+                            meta={"date": f"{test_start.date()} 以降の検証",
                                   "venues": "中央競馬"})
     write_site(payload, "webapp/template.html", "docs/index.html")
 
     lines = [
         f"# 検証レポート", "",
         f"更新 {datetime.now().strftime('%Y-%m-%d %H:%M')}", "",
-        f"- 学習データ {data['date'].min().date()} 〜 {pd.Timestamp(a.test_start).date()} 手前",
-        f"- 検証データ {a.test_start} 以降 {pred['race_id'].nunique():,}レース",
+        f"- 学習データ {data['date'].min().date()} 〜 {test_start.date()} 手前",
+        f"- 検証データ {test_start.date()} 以降 {pred['race_id'].nunique():,}レース",
         f"- 順位割引 λ2={lam2:.2f} λ3={lam3:.2f}",
-        "", "## 単勝・複勝", "", overall.to_frame("値").to_markdown(),
-        "", "## 自信度グレード別", "", summary.to_markdown(),
+        "", "## 単勝・複勝", "", as_table(overall.to_frame("値")),
+        "", "## 自信度グレード別", "", as_table(summary),
     ]
     if not scope.empty:
         lines += ["", "## 連勝式（実際の払戻で計算）", "",
                   "控除率は馬連・馬単22.5%、3連複25%、3連単27.5%。",
                   "回収率がこれを超えているかが判断の目安。", "",
-                  scope.to_markdown(index=False)]
+                  as_table(scope, index=False)]
     with open("docs/report.md", "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
