@@ -49,15 +49,33 @@ def _truth(g):
             "3連複": sorted([a, b, c]), "3連単": [a, b, c]}
 
 
+def _index_odds(odds_by_no, numbers):
+    """馬番キーのオッズ表を、行番号キーに変換する。"""
+    if not odds_by_no:
+        return None
+    pos = {int(n): i for i, n in enumerate(numbers)}
+    out = {}
+    for combo, o in odds_by_no.items():
+        combo = combo if isinstance(combo, tuple) else (combo,)
+        try:
+            out[tuple(pos[int(x)] for x in combo)] = float(o)
+        except (KeyError, ValueError, TypeError):
+            continue
+    return out or None
+
+
 def _bets_payload(g, model_probs, market, strategy, bet_types, points,
-                  lam2, lam3, min_ev=None):
+                  lam2, lam3, min_ev=None, real_odds=None):
     out = {}
     truth = _truth(g)
     numbers = g["horse_no"].to_numpy()
+    real_odds = real_odds or {}
     for bt in bet_types:
+        actual = _index_odds(real_odds.get(bt), numbers)
         bets = build_bets(model_probs, market, bt,
                           max_points=points.get(bt, 8),
                           strategy=strategy, min_ev=min_ev,
+                          actual_odds=actual,
                           lam2=lam2, lam3=lam3)
         if bets.empty:
             out[bt] = {"points": [], "summary": bet_summary(bets)}
@@ -74,6 +92,7 @@ def _bets_payload(g, model_probs, market, strategy, bet_types, points,
                         "ev": round(float(r.ev), 2), "hit": is_hit})
         out[bt] = {
             "points": pts,
+            "real_odds": actual is not None,
             "result": (None if truth is None else ("hit" if hit_any else "miss")),
             "summary": {k: (round(v, 4) if isinstance(v, float) else v)
                         for k, v in bet_summary(bets).items()},
@@ -84,7 +103,12 @@ def _bets_payload(g, model_probs, market, strategy, bet_types, points,
 def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
                   bet_types=("馬連", "馬単", "3連複", "3連単"),
                   points=None, lam2=LAMBDA2_DEFAULT, lam3=LAMBDA3_DEFAULT,
-                  min_grade="C", ev_threshold=1.05, meta=None):
+                  min_grade="C", ev_threshold=1.05, meta=None,
+                  odds_tables=None):
+    """
+    odds_tables: {race_id: {"馬連": {(馬番,馬番): 倍率}, ...}}
+        実オッズが渡されればそれで期待値を計算する。無ければ単勝オッズからの推定。
+    """
     points = points or DEFAULT_POINTS
     grader = grader or ConfidenceGrader()
 
@@ -142,9 +166,11 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
             "agree": bool(info.get("model_agree", 0)),
             "horses": sorted(horses, key=lambda h: h["no"]),
             "bets": {
-                "A": _bets_payload(g, sA, market, "hit", bet_types, points, lam2, lam3),
+                "A": _bets_payload(g, sA, market, "hit", bet_types, points, lam2, lam3,
+                                   real_odds=(odds_tables or {}).get(race_id)),
                 "B": _bets_payload(g, sB, market, "ev", bet_types, points, lam2, lam3,
-                                   min_ev=ev_threshold),
+                                   min_ev=ev_threshold,
+                                   real_odds=(odds_tables or {}).get(race_id)),
             },
         })
 
