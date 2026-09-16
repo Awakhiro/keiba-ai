@@ -47,6 +47,9 @@ def _files(root):
 
 
 def publish(token, repo, root=".", private=False, branch="main", pause=0.35):
+    from .colab_publish import _clean_token, _clean_name
+    token = _clean_token(token)
+    repo = _clean_name(repo, "リポジトリ名")
     h = {"Authorization": f"Bearer {token}",
          "Accept": "application/vnd.github+json",
          "X-GitHub-Api-Version": "2022-11-28"}
