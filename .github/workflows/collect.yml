@@ -29,9 +29,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -50,13 +50,17 @@ jobs:
 
       - name: 保存
         run: |
+          BRANCH="${{ github.event.repository.default_branch }}"
+          BRANCH="${BRANCH:-main}"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/
+          git add -A data/ || { echo "data がありません"; exit 0; }
           git diff --staged --quiet && echo "変更なし" && exit 0
           git commit -m "データ収集 $(date -u +%Y-%m-%dT%H:%M)"
-          git pull --rebase --autostash origin ${{ github.ref_name }}
-          git push
+          # detached HEAD でも確実に動くよう、ブランチ名を明示して push する
+          git fetch origin "$BRANCH"
+          git rebase "origin/$BRANCH" || git rebase --abort
+          git push origin "HEAD:$BRANCH"
 
       - name: 進捗
         run: |
