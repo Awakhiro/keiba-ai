@@ -25,11 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -45,19 +45,41 @@ jobs:
           fi
 
       - name: 学習と検証
+        id: train
         if: steps.check.outputs.skip != 'true'
         run: |
-          python scripts/train_and_publish.py \
-            --test-start "${{ inputs.test_start || '2026-08-01' }}" | tee /tmp/log.txt
-          { echo '### 検証結果'; echo '```'; tail -40 /tmp/log.txt; echo '```'; } >> $GITHUB_STEP_SUMMARY
+          # pipefail が無いと tee の終了コードが返り、Python のエラーが見えなくなる
+          set -o pipefail
+          python -u scripts/train_and_publish.py \
+            --test-start "${{ inputs.test_start || '2026-08-01' }}" 2>&1 | tee /tmp/log.txt
+        continue-on-error: true
+
+      - name: ログ
+        if: always() && steps.check.outputs.skip != 'true'
+        run: |
+          { echo '### 学習と検証のログ'; echo '```'; tail -60 /tmp/log.txt 2>/dev/null || echo 'ログなし'; echo '```'; } >> $GITHUB_STEP_SUMMARY
+          ls -la docs 2>/dev/null || echo "docs は作られていません"
 
       - name: 公開
         if: steps.check.outputs.skip != 'true'
         run: |
+          if [ ! -d docs ] || [ -z "$(ls -A docs 2>/dev/null)" ]; then
+            echo "docs が空なので公開をスキップします。上のログを確認してください。"
+            exit 0
+          fi
+          BRANCH="${{ github.event.repository.default_branch }}"
+          BRANCH="${BRANCH:-main}"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/
+          git add -A docs/
           git diff --staged --quiet && echo "変更なし" && exit 0
           git commit -m "予想を更新 $(date -u +%Y-%m-%dT%H:%M)"
-          git pull --rebase --autostash origin ${{ github.event.repository.default_branch }}
-          git push
+          git fetch origin "$BRANCH"
+          git rebase "origin/$BRANCH" || git rebase --abort
+          git push origin "HEAD:$BRANCH"
+      - name: 学習の成否を判定
+        if: steps.check.outputs.skip != 'true' && steps.train.outcome == 'failure'
+        run: |
+          echo "学習が失敗しました。上のログを確認してください。"
+          exit 1
+
