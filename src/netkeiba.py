@@ -378,7 +378,7 @@ def to_model_schema(df: pd.DataFrame) -> pd.DataFrame:
         "post_time", "horse_id", "horse_name", "horse_no", "frame_no", "age", "sex",
         "weight_carried", "jockey_id", "jockey_name", "trainer_id", "trainer_name",
         "odds_prev_win", "odds_win_final", "popularity_final", "finish_pos",
-        "last3f", "corner_pos", "horse_weight", "horse_weight_diff", "prize",
+        "finish_time", "last3f", "corner_pos", "pace_first3f", "pace_last3f", "horse_weight", "horse_weight_diff", "prize",
         "payout_win", "payout_place",
     ]
     return d[[c for c in keep if c in d.columns]].reset_index(drop=True)
