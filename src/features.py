@@ -9,6 +9,8 @@
 import numpy as np
 import pandas as pd
 
+from .timeform import add_time_features
+
 DIST_BUCKET_EDGES = [0, 1400, 1800, 2200, 9999]
 DIST_BUCKET_LABELS = [0, 1, 2, 3]
 
@@ -175,6 +177,27 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
         df["closing_tendency"] = mg
         df.drop(columns=["_c1_rel", "_c4_rel", "_pos_gain"], inplace=True)
 
+    # ---- 本来のペース（前半3F と 後半3F の差） ----
+    # 前半が速い＝前傾ラップ＝先行馬に厳しい。後半が速い＝後傾＝差しに厳しい。
+    if "pace_first3f" in df.columns and df["pace_first3f"].notna().any():
+        df["pace_balance"] = df["pace_first3f"] - df["pace_last3f"]
+        for lag in (1, 2):
+            df[f"prev{lag}_pace_balance"] = _shifted(df, "horse_id", "pace_balance", lag)
+        # その馬が経験したペースの平均と、そこでの成績
+        m, c = _past_mean(df, ["horse_id"], "pace_balance")
+        df["pace_balance_avg"] = np.where(c >= 2, m, np.nan)
+        # 前傾ラップ（前半が速い）での複勝率と、後傾での複勝率
+        fast_front = (df["pace_balance"] < 0).astype(float)
+        df["_top3_front"] = np.where(fast_front > 0, df["is_top3"], np.nan)
+        df["_top3_back"] = np.where(fast_front == 0, df["is_top3"], np.nan)
+        for col, out in (("_top3_front", "pace_apt_front"), ("_top3_back", "pace_apt_back")):
+            vals = df[col].to_numpy(dtype=float)
+            ok = ~np.isnan(vals)
+            mm, cc = _past_mean(df, ["horse_id"], col)
+            df[out] = np.where(cc >= 2, mm, np.nan)
+        df["pace_apt_gap"] = df["pace_apt_front"] - df["pace_apt_back"]
+        df.drop(columns=["_top3_front", "_top3_back"], inplace=True)
+
     # ---- 賞金履歴 ----
     if "prize" in df.columns and df["prize"].notna().any():
         pr = df["prize"].fillna(0.0)
@@ -195,6 +218,9 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
         g = df.groupby("race_id")[c]
         df[f"{c}_rank"] = g.rank(ascending=False, method="min")
         df[f"{c}_rel"] = df[c] - g.transform("mean")
+
+    # ---- 走破タイム由来（馬場差・タイム指数・ペース適性） ----
+    df = add_time_features(df)
 
     # ---- 前日オッズ特徴量(モデルB専用) ----
     df = _add_odds_features(df)
