@@ -1,0 +1,71 @@
+name: 馬データ補完
+
+# 馬の戦績ページから通過順・ペース・上がり3F を集める。
+# レース結果ページでは有料化された情報だが、戦績ページには残っている。
+# 馬1頭につき1リクエストで全出走歴ぶんが取れるので効率がよい。
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "1回あたりの実行時間(分)"
+        default: "300"
+      min_starts:
+        description: "この回数以上出走した馬に絞る（多いほど速く終わる）"
+        default: "1"
+  schedule:
+    - cron: "30 */6 * * *"
+
+concurrency:
+  group: horses
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  horses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -q -r requirements.txt
+
+      - name: データ確認
+        id: check
+        run: |
+          if ! ls data/races.* >/dev/null 2>&1; then
+            echo "レースデータがまだありません。先にデータ収集を実行してください。" >> $GITHUB_STEP_SUMMARY
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 収集
+        id: scrape
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -o pipefail
+          python -u scripts/scrape_horses.py \
+            --minutes "${{ inputs.minutes || '300' }}" \
+            --min-starts "${{ inputs.min_starts || '1' }}" 2>&1 | tee /tmp/h.log \
+            && echo "complete=true" >> $GITHUB_OUTPUT \
+            || { c=$?; [ $c -eq 75 ] && echo "complete=false" >> $GITHUB_OUTPUT || exit $c; }
+
+      - name: 保存
+        if: always() && steps.check.outputs.skip != 'true'
+        run: |
+          BRANCH="${{ github.event.repository.default_branch }}"
+          BRANCH="${BRANCH:-main}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/ || { echo "data がありません"; exit 0; }
+          git diff --staged --quiet && echo "変更なし" && exit 0
+          git commit -m "馬データ補完 $(date -u +%Y-%m-%dT%H:%M)"
+          git fetch origin "$BRANCH"
+          git rebase "origin/$BRANCH" || git rebase --abort
+          git push origin "HEAD:$BRANCH"
+          { echo '### 進捗'; echo '```'; tail -20 /tmp/h.log 2>/dev/null; echo '```'; } >> $GITHUB_STEP_SUMMARY
