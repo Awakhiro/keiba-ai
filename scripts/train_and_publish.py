@@ -74,6 +74,18 @@ def main():
     print(f"{len(data):,}行 / {data['race_id'].nunique():,}レース "
           f"({data['date'].min().date()}〜{data['date'].max().date()})", flush=True)
 
+    # 任意列がちゃんと取れているかを先に見せる（欠けていても学習は続く）
+    opt = {"corner_pos": "通過順(脚質)", "last3f": "上がり3F",
+           "prize": "賞金", "odds_prev_win": "単勝オッズ", "sire_id": "血統"}
+    print("\n列の充足率:")
+    for c, label in opt.items():
+        if c not in data.columns:
+            print(f"  {label:14s} 列なし")
+            continue
+        s_ = data[c].astype("string")
+        ok = s_.notna() & ~s_.str.lower().isin(["nan", "none", "<na>", ""])
+        print(f"  {label:14s} {ok.mean()*100:5.1f}%")
+
     feat = build_features(data)
 
     # 指定した検証期間にデータが無ければ、実データの末尾2か月に自動で寄せる
