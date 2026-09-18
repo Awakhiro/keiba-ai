@@ -9,8 +9,8 @@ on:
         description: "収集開始日"
         default: "2025-01-01"
       end:
-        description: "収集終了日"
-        default: "2026-09-13"
+        description: "収集終了日（空欄なら今日まで）"
+        default: ""
       minutes:
         description: "1回あたりの実行時間(分)"
         default: "300"
@@ -41,9 +41,13 @@ jobs:
       - name: 収集
         id: scrape
         run: |
-          python scripts/scrape_chunk.py \
+          # 終了日を省略したら今日まで。定期実行でも新しいレースが自動で入る。
+          END="${{ inputs.end }}"
+          END="${END:-$(date -u +%Y-%m-%d)}"
+          echo "収集範囲の終わり: $END"
+          python -u scripts/scrape_chunk.py \
             --start "${{ inputs.start || '2025-01-01' }}" \
-            --end   "${{ inputs.end   || '2026-09-13' }}" \
+            --end   "$END" \
             --minutes "${{ inputs.minutes || '300' }}" \
             && echo "complete=true" >> $GITHUB_OUTPUT \
             || { c=$?; [ $c -eq 75 ] && echo "complete=false" >> $GITHUB_OUTPUT || exit $c; }
