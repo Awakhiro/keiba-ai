@@ -229,9 +229,14 @@ def parse_race(race_id, html):
     ids = pd.DataFrame([_row_ids(tr) for tr in rows])
 
     def col(*names):
+        # 完全一致 → 部分一致の順で探す。表記ゆれで取り逃がさないように。
         for n in names:
             if n in df.columns:
                 return df[n]
+        for n in names:
+            for c in df.columns:
+                if n in c:
+                    return df[c]
         return pd.Series([None] * len(df))
 
     out = pd.DataFrame({
@@ -254,14 +259,14 @@ def parse_race(race_id, html):
         "sex_age": col("性齢").astype(str),
         "weight_carried": pd.to_numeric(col("斤量"), errors="coerce"),
         "jockey_name": col("騎手").astype(str).map(_norm),
-        "finish_time": col("タイム").astype(str),
-        "corner_pos": col("通過").astype(str),
-        "last3f": pd.to_numeric(col("上り"), errors="coerce"),
+        "finish_time": col("タイム", "走破").astype(str),
+        "corner_pos": col("通過", "通過順", "コーナー").astype(str),
+        "last3f": pd.to_numeric(col("上り", "上がり", "後3F"), errors="coerce"),
         "odds_win_final": pd.to_numeric(col("単勝"), errors="coerce"),
-        "popularity_final": pd.to_numeric(col("人気"), errors="coerce"),
-        "weight_raw": col("馬体重").astype(str),
+        "popularity_final": pd.to_numeric(col("人気", "人 気"), errors="coerce"),
+        "weight_raw": col("馬体重", "体重").astype(str),
         "trainer_name": col("調教師").astype(str).map(_norm),
-        "prize": pd.to_numeric(col("賞金(万円)"), errors="coerce").fillna(0.0),
+        "prize": pd.to_numeric(col("賞金(万円)", "賞金"), errors="coerce").fillna(0.0),
     })
     out = pd.concat([out, ids], axis=1)
 
