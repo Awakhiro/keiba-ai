@@ -85,6 +85,7 @@ tr.top td{background:rgba(181,48,30,.05)}
 .pv{font-variant-numeric:tabular-nums}
 .dim{color:var(--muted);font-size:12px}
 .pos{color:var(--ok);font-weight:700}
+.gap{display:block;font-size:10px;color:var(--muted);font-weight:400;letter-spacing:0}
 .fin{display:inline-block;min-width:19px;text-align:center;font-size:11px;font-weight:700;
   border:1px solid var(--rule);color:var(--muted);margin-left:5px;padding:0 2px}
 .fin.p1{background:var(--shu);color:#fff;border-color:var(--shu)}
@@ -93,6 +94,24 @@ tr.top td{background:rgba(181,48,30,.05)}
 .res.hit{color:var(--ok);border-color:var(--ok)}
 .res.miss{color:var(--muted);border-color:var(--rule)}
 .buy li.win{background:rgba(29,110,69,.09)}
+
+/* ---------- おすすめ ---------- */
+.rec{border:2px solid var(--ink);padding:12px 13px 11px;margin:14px 0 4px}
+.rec.b{border-color:var(--ai)}
+.rec.skip{border-style:dashed;border-color:var(--rule)}
+.rec-top{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.rec-type{font-size:19px;font-weight:800;letter-spacing:.04em}
+.rec-pts{font-size:13px;color:var(--muted)}
+.rec-shape{font-size:12px;color:var(--muted);margin-left:auto}
+.rec-combos{margin:10px 0 9px;display:flex;flex-direction:column;gap:5px}
+.rec-line{display:flex;align-items:center;gap:4px;font-size:15px;font-weight:700}
+.rec-line .sep{font-weight:400}
+.rec-nums{font-size:12px;color:var(--muted);margin-left:auto;font-weight:400}
+.rec-stats{display:flex;gap:15px;font-size:11px;color:var(--muted);
+  border-top:1px solid var(--rule);padding-top:8px}
+.rec-stats b{display:block;font-size:15px;color:var(--ink);font-weight:700;line-height:1.3}
+.rec-why{font-size:11px;color:var(--muted);margin-top:7px;line-height:1.6}
+.rec-alt{font-size:11px;color:var(--muted);margin-top:5px}
 
 /* ---------- 買い目 ---------- */
 .tabs{display:flex;gap:0;margin:16px 0 0;border-bottom:1px solid var(--rule)}
@@ -174,11 +193,15 @@ function horseRows(r){
   const fh = hasFin ? '<th>着</th>' : '';
   const head = model==='A'
     ? `<tr><th>印</th><th>馬</th><th>3着内</th><th>単勝</th>${fh}</tr>`
-    : `<tr><th>印</th><th>馬</th><th>勝率</th><th>単勝</th><th>期待値</th>${fh}</tr>`;
+    : `<tr><th>印</th><th>馬</th><th>勝率</th><th>単勝</th><th>妙味</th>${fh}</tr>`;
   const rows = r.horses.map(h=>{
     const hot = h[mk]==='◎'||h[mk]==='○';
+    // 妙味 = 能力から見た評価 ÷ 市場の評価。1.25以上なら人気が想定より低い
+    const val = (h.edge == null) ? h.ev : h.edge;
+    const hot2 = h.edge != null && h.edge >= 1.25 && h.gap >= 1;
     const ev = model==='B'
-      ? `<td class="pv ${h.ev>=1 ? 'pos':'dim'}">${h.ev.toFixed(2)}</td>` : '';
+      ? `<td class="pv ${hot2 ? 'pos':'dim'}">${val.toFixed(2)}${
+          hot2 && h.gap ? `<span class="gap">人気${h.gap}枚下</span>` : ''}</td>` : '';
     return `<tr class="${hot?'top':''}">
       <td class="mark">${h[mk]}</td>
       <td><span class="uma">${frameChip(h.frame,h.no)}<span class="hn">${h.name}</span></span></td>
@@ -187,6 +210,44 @@ function horseRows(r){
       ${h.fin ? `<td><span class="fin p${h.fin<=3?h.fin:''}">${h.fin}</span></td>`:''}</tr>`;
   }).join('');
   return `<table class="${model==='B'?'b':''}"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
+}
+
+function recSection(r){
+  const rec = r.recommend && r.recommend[model];
+  if(!rec) return '';
+  const cls = model==='B' ? 'rec b' : 'rec';
+  if(rec.skip){
+    return `<div class="${cls} skip"><div class="rec-top">
+      <span class="rec-type">見送り</span></div>
+      <div class="rec-why">${rec.reason}</div></div>`;
+  }
+  const sep = rec.type.includes('単') ? '<span class="sep">→</span>' : '<span class="sep">−</span>';
+  const lines = rec.combos.map((c,i)=>{
+    const nums = c.map(n=>{
+      const h = r.horses.find(x=>x.no===n);
+      return frameChip(h?h.frame:1, n);
+    }).join(sep);
+    const d = rec.detail[i];
+    return `<div class="rec-line">${nums}
+      <span class="rec-nums">${d?d.odds.toFixed(1)+'倍':''}</span></div>`;
+  }).join('');
+  const badge = rec.hit===true ? '<span class="res hit">的中</span>'
+              : rec.hit===false ? '<span class="res miss">不的中</span>' : '';
+  const alts = rec.alts && rec.alts.length
+    ? `<div class="rec-alt">次点: ${rec.alts.map(a=>
+        `${a.type}${a.points}点（的中${(a.p*100).toFixed(0)}%）`).join('　')}</div>` : '';
+  return `<div class="${cls}">
+    <div class="rec-top"><span class="rec-type">${rec.type}</span>
+      <span class="rec-pts">${rec.points}点</span>${badge}
+      <span class="rec-shape">${rec.shape}</span></div>
+    <div class="rec-combos">${lines}</div>
+    <div class="rec-stats">
+      <div><b>${(rec.p*100).toFixed(0)}%</b>的中率</div>
+      <div><b>${rec.odds.toFixed(1)}倍</b>合成オッズ</div>
+      <div><b>${(rec.ret*100).toFixed(0)}%</b>期待回収率</div>
+    </div>
+    ${rec.real_odds ? '' : '<div class="rec-why">配当は単勝オッズからの推定です。</div>'}
+    ${alts}</div>`;
 }
 
 function buySection(r){
@@ -243,7 +304,7 @@ function raceCard(r){
       </span>
       <span class="caret">${open?'閉じる':'開く'}</span>
     </button>
-    <div class="body">${open ? horseRows(r)+buySection(r) : ''}</div>
+    <div class="body">${open ? recSection(r)+horseRows(r)+buySection(r) : ''}</div>
   </section>`;
 }
 
