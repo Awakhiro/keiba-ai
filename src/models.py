@@ -125,10 +125,13 @@ def make_models():
         use_odds=False,
         expected_sum=3.0,
     )
+    # オッズは特徴量に入れない。入れると推定勝率が市場をなぞってしまい、
+    # 「勝率×オッズ」が横並びになって、差が出るのはモデル誤差の大きい人気薄だけになる。
+    # オッズは src/value.py で「比較対象」としてだけ使う。
     model_b = RaceProbModel(
-        name="B_期待値重視(オッズ考慮)",
+        name="B_妙味(能力推定・オッズ非考慮)",
         target="is_win",
-        use_odds=True,
+        use_odds=False,
         expected_sum=1.0,
     )
     return model_a, model_b
