@@ -24,6 +24,17 @@ LEAK_COLS = [
     "payout_wide",
     "prize",                # 当該レースの獲得賞金＝着順そのもの
     "margin",               # 着差
+    # --- 走破タイム由来。当該レースの結果そのものなので絶対に入れない ---
+    "finish_time",
+    "time_sec",
+    "speed_fig",            # そのレースでのタイム指数
+    "race_dev",             # そのレースの勝ちタイムの基準差
+    "race_dev_adj",
+    "day_dev",              # その日全体の馬場差（後のレースを含む）
+    # --- 戦績ページから補完した列。当該レースの結果なので入れない ---
+    "pace_first3f",
+    "pace_last3f",
+    "pace_balance",
 ]
 
 TARGET_COLS = ["is_win", "is_top3"]
