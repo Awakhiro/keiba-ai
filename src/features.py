@@ -30,6 +30,24 @@ def _shifted(df, keys, col, lag):
     return df.groupby(keys, sort=False)[col].shift(lag)
 
 
+def _as_text(series):
+    """
+    どんな型でも .str が使える形にする。
+    pandas 3 系では全てNaNのfloat列に astype(str) をかけてもfloatのままで、
+    .str アクセサが AttributeError になるため。
+    """
+    return series.astype("string")
+
+
+def _usable(series):
+    """その列に中身があるか（全部空なら特徴量を作らない）。"""
+    if series is None:
+        return False
+    s = _as_text(series)
+    return s.notna().any() and (s.str.strip() != "").any() and \
+        (~s.str.lower().isin(["nan", "none", "<na>"])).any()
+
+
 def _smooth_rate(mean, cnt, prior, prior_weight=15.0):
     """出走数が少ない馬・騎手の勝率を事前分布に縮小(ベイズ平滑化)。"""
     mean = np.where(np.isnan(mean), prior, mean)
@@ -141,11 +159,10 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
         df["sire_dist_top3_rate"] = _smooth_rate(sdw, sdc, 0.24, 60)
 
     # ---- 脚質(通過順) ----
-    if "corner_pos" in df.columns:
-        first = (df["corner_pos"].astype(str).str.split("-").str[0]
-                 .pipe(pd.to_numeric, errors="coerce"))
-        last = (df["corner_pos"].astype(str).str.split("-").str[-1]
-                .pipe(pd.to_numeric, errors="coerce"))
+    if "corner_pos" in df.columns and _usable(df["corner_pos"]):
+        cp = _as_text(df["corner_pos"])
+        first = pd.to_numeric(cp.str.split("-").str[0], errors="coerce")
+        last = pd.to_numeric(cp.str.split("-").str[-1], errors="coerce")
         df["_c1_rel"] = first / df["field_size"]
         df["_c4_rel"] = last / df["field_size"]
         df["_pos_gain"] = df["_c1_rel"] - df["_c4_rel"]      # 正なら差してきた
@@ -159,7 +176,7 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
         df.drop(columns=["_c1_rel", "_c4_rel", "_pos_gain"], inplace=True)
 
     # ---- 賞金履歴 ----
-    if "prize" in df.columns:
+    if "prize" in df.columns and df["prize"].notna().any():
         pr = df["prize"].fillna(0.0)
         g = pd.DataFrame({"_p": pr}).groupby(df["horse_id"], sort=False)["_p"]
         df["career_prize"] = g.cumsum() - pr
