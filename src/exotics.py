@@ -131,21 +131,31 @@ def estimated_payouts(market_probs, bet_type, lam2=LAMBDA2_DEFAULT, lam3=LAMBDA3
 # ------------------------------------------------------------------ 買い目構築
 def build_bets(model_probs, market_probs, bet_type, actual_odds=None,
                max_points=12, min_ev=None, strategy="hit",
-               lam2=LAMBDA2_DEFAULT, lam3=LAMBDA3_DEFAULT):
+               lam2=LAMBDA2_DEFAULT, lam3=LAMBDA3_DEFAULT,
+               allowed_members=None, max_odds=None):
     """
-    strategy="hit" : 的中確率の高い順に買う（モデルA向け）
-    strategy="ev"  : 期待値の高い順に買う（モデルB向け）
+    strategy="hit" : 的中確率の高い順に買う（能力重視）
+    strategy="ev"  : 期待値の高い順に買う（妙味重視）
 
-    actual_odds: {組み合わせ: オッズ} が渡されればそれを使う。無ければ市場から推定。
-    戻り値: DataFrame（組み合わせ, 的中確率, オッズ, 期待値）
+    actual_odds:     {組み合わせ: オッズ} が渡されればそれを使う。無ければ市場から推定。
+    allowed_members: 買い目に入れてよい馬の行番号の集合。
+                     期待値順に並べると、確率がほぼゼロの馬ほどオッズが高いせいで
+                     上位に来てしまう。能力の下限で足切りするために使う。
+    max_odds:        これを超える配当の組み合わせは買わない。
+                     推定誤差が配当倍率で増幅されるのを防ぐ。
     """
     p_tbl = combo_tables(model_probs, lam2, lam3)[bet_type]
     odds_tbl = actual_odds or estimated_payouts(market_probs, bet_type, lam2, lam3)
+    allowed = set(allowed_members) if allowed_members is not None else None
 
     rows = []
     for combo, p in p_tbl.items():
         o = odds_tbl.get(combo)
         if o is None:
+            continue
+        if allowed is not None and not set(combo) <= allowed:
+            continue
+        if max_odds is not None and o > max_odds:
             continue
         rows.append({"combo": combo, "p": p, "odds": o, "ev": p * o})
     df = pd.DataFrame(rows)
