@@ -33,19 +33,24 @@ def _run(args, secret=None, **kw):
 
 
 def _clean_token(token):
-    """貼り付けミスを早めに弾く。"""
-    t = (token or "").strip()
+    """
+    貼り付けのゆらぎを吸収する。
+    トークンに空白は含まれないので、空白や改行は安全に取り除ける。
+    取り除いたうえで形式が合わなければ、そのときに弾く。
+    """
+    raw = token or ""
+    t = re.sub(r"\s+", "", raw)
     if not t:
         raise ValueError("トークンが空です。")
-    if len(t.split()) > 1 or "\n" in t:
-        raise ValueError(
-            "トークンに余計な文字が混ざっています。"
-            "前の出力ごとコピーしていないか確認し、ghp_ で始まる文字列だけを貼ってください。")
+    if t != raw.strip():
+        print("トークンから空白・改行を取り除きました。")
     if not re.fullmatch(r"[A-Za-z0-9_\-]{20,255}", t):
         raise ValueError(
-            "トークンの形式が正しくありません。"
-            "GitHub の Settings → Developer settings → Personal access tokens (classic) で"
-            "作り直し、ghp_ で始まる文字列だけを貼ってください。")
+            f"トークンの形式が正しくありません（読み取った長さ {len(t)}）。"
+            "前の出力ごとコピーしていないか確認してください。"
+            "作り直す場合は GitHub の Settings → Developer settings → "
+            "Personal access tokens (classic) で、スコープに repo と workflow を付けて生成し、"
+            "表示直後のコピーボタンを使ってください。")
     return t
 
 
