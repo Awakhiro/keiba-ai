@@ -18,6 +18,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.netkeiba import to_model_schema                       # noqa: E402
 from src.store import load_table, exists                       # noqa: E402
+from src.netkeiba_horse import merge_into                      # noqa: E402
 from src.features import build_features                        # noqa: E402
 from src.backtest import holdout, evaluate, evaluate_exotics_real  # noqa: E402
 from src.exotics import fit_lambdas                            # noqa: E402
@@ -68,6 +69,13 @@ def main():
 
     os.makedirs("docs", exist_ok=True)   # 失敗しても公開ステップが転ばないように
     raw = load_table("data/races")
+    # 馬の戦績ページから補完した通過順・ペース・上がりがあれば取り込む
+    if exists("data/horse_extra"):
+        extra = load_table("data/horse_extra")
+        before = raw["corner_pos"].notna().mean() if "corner_pos" in raw.columns else 0
+        raw = merge_into(raw, extra)
+        after = raw["corner_pos"].notna().mean()
+        print(f"戦績ページからの補完: 通過順 {before*100:.0f}% → {after*100:.0f}%")
     pays = load_table("data/pays") if exists("data/pays") else pd.DataFrame()
 
     data = to_model_schema(raw)
