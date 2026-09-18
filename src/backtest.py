@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .models import make_models
+from .value import add_value_columns
 from .confidence import race_confidence, confidence_score, ConfidenceGrader
 
 
@@ -40,7 +41,9 @@ def walk_forward(feat: pd.DataFrame, n_folds=5, min_train_ratio=0.4, verbose=Tru
 
         t = test.copy()
         t["p_top3"] = model_a.predict(t)
-        t["p_win"] = model_b.predict(t)
+        t["p_win_pure"] = model_b.predict(t)
+        t = add_value_columns(t)
+        t["p_win"] = t["p_blend"]
         t["fold"] = i
         preds.append(t)
 
@@ -282,7 +285,9 @@ def holdout(feat: pd.DataFrame, test_start, test_end=None, verbose=True):
 
     t = test.copy()
     t["p_top3"] = model_a.predict(t)
-    t["p_win"] = model_b.predict(t)
+    t["p_win_pure"] = model_b.predict(t)
+    t = add_value_columns(t)
+    t["p_win"] = t["p_blend"]
     if verbose:
         print(f"学習 {train['date'].min().date()}〜{train['date'].max().date()} "
               f"{train['race_id'].nunique()}レース / "
