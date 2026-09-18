@@ -19,11 +19,12 @@ from .exotics import (
     LAMBDA2_DEFAULT, LAMBDA3_DEFAULT,
 )
 from .confidence import race_confidence, confidence_score, ConfidenceGrader
+from .recommend import recommend_for_race
 
 MARKS = ["◎", "○", "▲", "△", "△", "×"]
 
-# 券種ごとの標準点数（買いすぎを防ぐ上限）
-DEFAULT_POINTS = {"馬連": 6, "馬単": 8, "3連複": 10, "3連単": 16}
+# 券種ごとの点数。3〜5点に絞る方針。
+DEFAULT_POINTS = {"馬連": 4, "馬単": 4, "3連複": 5, "3連単": 5}
 
 
 def _marks(order_idx, n):
@@ -32,6 +33,40 @@ def _marks(order_idx, n):
         if rank < len(MARKS):
             m[i] = MARKS[rank]
     return m
+
+
+def _rec_payload(g, mode, odds_by_no, lam2, lam3):
+    """レースごとの推奨買い目。的中判定も付ける。"""
+    try:
+        rec = recommend_for_race(g, mode=mode, odds_by_no=odds_by_no,
+                                 lam2=lam2, lam3=lam3)
+    except Exception:
+        return None
+    if rec.get("見送り"):
+        return {"skip": True, "reason": rec.get("理由", "")}
+    truth = _truth(g)
+    key = rec["券種"]
+    hit = None
+    if truth is not None:
+        want = truth[key]
+        hit = any((sorted(c) if key in ("馬連", "3連複") else c) == want
+                  for c in rec["買い目"])
+    return {
+        "skip": False,
+        "type": key,
+        "points": rec["点数"],
+        "shape": rec["形"],
+        "p": round(float(rec["的中確率"]), 4),
+        "odds": round(float(rec["合成オッズ"]), 1),
+        "ret": round(float(rec["期待回収率"]), 2),
+        "real_odds": bool(rec["実オッズ"]),
+        "combos": rec["買い目"],
+        "detail": rec["明細"],
+        "hit": hit,
+        "alts": [{"type": o["券種"], "points": o["点数"],
+                  "p": round(float(o["的中確率"]), 4),
+                  "ret": round(float(o["期待回収率"]), 2)} for o in rec.get("次点", [])],
+    }
 
 
 def _truth(g):
@@ -147,7 +182,9 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
                 "odds": round(float(r["odds_prev_win"]), 1),
                 "pA": round(float(r["p_top3"]), 3),
                 "pB": round(float(r["p_win"]), 3),
-                "ev": round(float(r["p_win"] * r["odds_prev_win"]), 2),
+                "ev": round(float(r.get("ev_win", r["p_win"] * r["odds_prev_win"])), 2),
+                "edge": (round(float(r["edge_blend"]), 2) if "edge_blend" in g.columns else None),
+                "gap": (int(r["pop_gap"]) if "pop_gap" in g.columns else None),
                 "markA": markA[i],
                 "markB": markB[i],
                 "fin": (int(r["finish_pos"]) if pd.notna(r.get("finish_pos")) else None),
@@ -171,6 +208,10 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
                 "B": _bets_payload(g, sB, market, "ev", bet_types, points, lam2, lam3,
                                    min_ev=ev_threshold,
                                    real_odds=(odds_tables or {}).get(race_id)),
+            },
+            "recommend": {
+                "A": _rec_payload(g, "hit", (odds_tables or {}).get(race_id), lam2, lam3),
+                "B": _rec_payload(g, "ev", (odds_tables or {}).get(race_id), lam2, lam3),
             },
         })
 
