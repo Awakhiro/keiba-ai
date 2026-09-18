@@ -13,6 +13,7 @@ import pandas as pd
 
 from .features import build_features
 from .models import make_models
+from .value import add_value_columns
 from .confidence import race_confidence, confidence_score, pick_confident_races
 
 
@@ -41,9 +42,10 @@ class KeibaPredictor:
         target_races = set(entries["race_id"])
         t = feat[feat["race_id"].isin(target_races)].copy()
 
-        t["p_top3"] = self.model_a.predict(t)   # モデルA: 複勝圏確率
-        t["p_win"] = self.model_b.predict(t)    # モデルB: 勝率
-        t["ev_win"] = t["p_win"] * t["odds_prev_win"]
+        t["p_top3"] = self.model_a.predict(t)        # モデルA: 複勝圏確率
+        t["p_win_pure"] = self.model_b.predict(t)    # モデルB: 能力のみの勝率
+        t = add_value_columns(t)                     # 市場と比較して妙味を算出
+        t["p_win"] = t["p_blend"]                    # 買い目の確率は混合後を使う
         if "odds_prev_place_low" in t.columns:
             t["ev_place"] = t["p_top3"] * t["odds_prev_place_low"]
         t["rank_a"] = t.groupby("race_id")["p_top3"].rank(ascending=False, method="min")
