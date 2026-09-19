@@ -1,0 +1,114 @@
+name: 当日の予想
+
+# 朝に1回だけ学習し、そのあとは発走が近いレースのオッズだけを取り直す。
+#
+# 定期実行(cron)は数分〜十数分ずれることがあるため、締切15分前という精度は出せない。
+# そこで「1つのジョブの中で時計を見ながら待つ」形にしている。
+# GitHub の1ジョブは最長6時間なので、午前と午後の2本に分ける。
+on:
+  schedule:
+    - cron: "0 23 * * 5,6"   # 金23:00UTC=土08:00JST / 土23:00UTC=日08:00JST
+    - cron: "0 4 * * 6,0"    # 土04:00UTC=土13:00JST / 日04:00UTC=日13:00JST
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "対象日（空欄なら日本時間の今日）"
+        default: ""
+      until:
+        description: "オッズ更新を続ける時刻 (JST)"
+        default: ""
+      min_grade:
+        description: "この格付け以上を載せる (S/A/B/C)"
+        default: "B"
+
+concurrency:
+  group: predict-today
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  today:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -q -r requirements.txt
+
+      - name: 時刻と終了時刻を決める
+        id: t
+        run: |
+          echo "now=$(TZ=Asia/Tokyo date +%H:%M)" >> $GITHUB_OUTPUT
+          HOUR=$(TZ=Asia/Tokyo date +%H)
+          # 午前の回は13:10まで、午後の回は16:50まで動かす
+          if [ -n "${{ inputs.until }}" ]; then
+            echo "until=${{ inputs.until }}" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" -lt 11 ]; then
+            echo "until=13:10" >> $GITHUB_OUTPUT
+          else
+            echo "until=16:50" >> $GITHUB_OUTPUT
+          fi
+          if ! ls data/races.* >/dev/null 2>&1; then
+            echo "学習データがありません。先に「データ収集」を実行してください。" >> $GITHUB_STEP_SUMMARY
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 朝の予想（学習あり）
+        id: morning
+        if: steps.t.outputs.skip != 'true'
+        run: |
+          set -o pipefail
+          # 状態ファイルが同じ日付で既にあれば学習を省く（午後の回など）
+          TODAY=$(TZ=Asia/Tokyo date +%F)
+          if [ -f docs/data/state.json ] && grep -q "\"$TODAY\"" docs/data/state.json; then
+            echo "本日の能力推定は既にあるので学習を省きます"
+          else
+            python -u scripts/predict_day.py \
+              --date "${{ inputs.date }}" \
+              --min-grade "${{ inputs.min_grade || 'B' }}" \
+              --archive 2>&1 | tee /tmp/p.log
+          fi
+        continue-on-error: true
+
+      - name: 初回の公開
+        if: steps.t.outputs.skip != 'true'
+        run: |
+          if [ ! -f docs/today_static.html ]; then
+            echo "開催が無い日か、出馬表がまだ公開されていません。" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs/
+          git diff --staged --quiet || git commit -q -m "当日の予想 $(TZ=Asia/Tokyo date +%H:%M)"
+          git push -q origin HEAD:"${{ github.event.repository.default_branch || 'main' }}" || true
+
+      - name: 発走前のオッズ更新
+        if: steps.t.outputs.skip != 'true' && hashFiles('docs/data/state.json') != ''
+        run: |
+          echo "### オッズ更新" >> $GITHUB_STEP_SUMMARY
+          python -u scripts/refresh_odds.py \
+            --loop --until "${{ steps.t.outputs.until }}" \
+            --lead 15 --window 45 --interval 4 --commit 2>&1 | tee /tmp/r.log
+          { echo '```'; tail -40 /tmp/r.log; echo '```'; } >> $GITHUB_STEP_SUMMARY
+
+      - name: 最後にもう一度公開
+        if: always() && steps.t.outputs.skip != 'true'
+        run: |
+          [ -d docs ] || exit 0
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs/
+          git diff --staged --quiet && exit 0
+          git commit -q -m "オッズ更新 $(TZ=Asia/Tokyo date +%H:%M)"
+          BRANCH="${{ github.event.repository.default_branch }}"
+          git fetch origin "${BRANCH:-main}"
+          git rebase "origin/${BRANCH:-main}" || git rebase --abort
+          git push origin HEAD:"${BRANCH:-main}"
