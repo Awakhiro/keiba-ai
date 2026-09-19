@@ -24,6 +24,7 @@ from src.features import build_features                # noqa: E402
 from src.backtest import walk_forward, evaluate        # noqa: E402
 from src.exotics import fit_lambdas                    # noqa: E402
 from src.webexport import build_payload, write_site    # noqa: E402
+from src.static_report import write as write_static     # noqa: E402
 
 
 def main():
@@ -75,6 +76,9 @@ def main():
                                   "venues": "・".join(sorted(entries["venue"].unique()))})
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     write_site(payload, "webapp/template.html", a.out)
+    static_path = a.out.replace(".html", "_静的.html")
+    write_static(payload, static_path, title=f"予想 {target}")
+    print(f"静的版（JavaScript不要）: {static_path}")
     print(f"\n書き出し: {a.out}（{len(payload['races'])}レース）")
     if not has_odds.all():
         print("オッズが欠けたレースがあります。「当てにいく」（モデルA）で見てください。")
