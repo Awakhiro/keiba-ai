@@ -8,7 +8,7 @@ name: Cloudflare Pages に公開（任意）
 #   CF_PROJECT_NAME        （Pages プロジェクト名）
 on:
   workflow_run:
-    workflows: ["学習と予想の公開"]
+    workflows: ["学習と予想の公開", "当日の予想"]
     types: [completed]
   workflow_dispatch:
 
