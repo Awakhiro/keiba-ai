@@ -23,6 +23,7 @@ from src.features import build_features                        # noqa: E402
 from src.backtest import holdout, evaluate, evaluate_exotics_real  # noqa: E402
 from src.exotics import fit_lambdas                            # noqa: E402
 from src.webexport import build_payload, write_site            # noqa: E402
+from src.static_report import write as write_static             # noqa: E402
 
 BETS = ["馬連", "馬単", "3連複", "3連単"]
 
@@ -129,6 +130,8 @@ def main():
                             meta={"date": f"{test_start.date()} 以降の検証",
                                   "venues": "中央競馬"})
     write_site(payload, "webapp/template.html", "docs/index.html")
+    # JavaScript が動かない環境（Drive のプレビュー等）向けの静的版
+    write_static(payload, "docs/static.html", title="検証結果")
 
     lines = [
         f"# 検証レポート", "",
