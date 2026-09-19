@@ -1,11 +1,12 @@
 name: Cloudflare Pages に公開（任意）
 
 # private リポジトリのまま予想ページを URL で見たい場合に使う。
-# 使う前に Cloudflare のダッシュボードで Pages プロジェクトを作り、
-# リポジトリの Settings → Secrets に次の3つを登録すること:
-#   CLOUDFLARE_API_TOKEN   （Cloudflare Pages の編集権限）
-#   CLOUDFLARE_ACCOUNT_ID
-#   CF_PROJECT_NAME        （Pages プロジェクト名）
+# 先に Cloudflare で Pages プロジェクトを作り（Workers & Pages →
+# Create application → Get started → Drag and drop）、
+# リポジトリの Settings → Secrets に次の3つを登録すること。
+#   CLOUDFLARE_API_TOKEN   Account / Cloudflare Pages / Edit 権限のトークン
+#   CLOUDFLARE_ACCOUNT_ID  ダッシュボードURLの32桁
+#   CF_PROJECT_NAME        プロジェクト名（自動で文字が付く場合があるので実際の名前）
 on:
   workflow_run:
     workflows: ["学習と予想の公開", "当日の予想"]
@@ -18,25 +19,56 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
 
-      - name: 設定確認
+      - name: 設定とファイルの確認
         id: cfg
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ secrets.CF_PROJECT_NAME }}
         run: |
-          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
-            echo "Cloudflare の設定がないのでスキップします。" >> $GITHUB_STEP_SUMMARY
-            echo "skip=true" >> $GITHUB_OUTPUT
-          elif [ ! -f docs/index.html ]; then
-            echo "docs/index.html がまだありません。" >> $GITHUB_STEP_SUMMARY
-            echo "skip=true" >> $GITHUB_OUTPUT
+          miss=""
+          [ -z "$TOKEN" ]   && miss="$miss CLOUDFLARE_API_TOKEN"
+          [ -z "$ACCOUNT" ] && miss="$miss CLOUDFLARE_ACCOUNT_ID"
+          [ -z "$PROJECT" ] && miss="$miss CF_PROJECT_NAME"
+          if [ -n "$miss" ]; then
+            echo "未登録のシークレット:$miss" >> $GITHUB_STEP_SUMMARY
+            echo "skip=true" >> $GITHUB_OUTPUT; exit 0
           fi
+          if [ ! -d docs ] || [ -z "$(ls -A docs 2>/dev/null)" ]; then
+            echo "docs が空です。先に予想を生成してください。" >> $GITHUB_STEP_SUMMARY
+            echo "skip=true" >> $GITHUB_OUTPUT; exit 0
+          fi
+          # 見に行きやすいよう、静的版を入口ページにする
+          if [ -f docs/today_static.html ]; then
+            cp docs/today_static.html docs/index.html
+          elif [ -f docs/static.html ]; then
+            cp docs/static.html docs/index.html
+          fi
+          echo "公開するファイル:" >> $GITHUB_STEP_SUMMARY
+          ls -la docs | head -20 >> $GITHUB_STEP_SUMMARY
+
+      - name: Node
+        if: steps.cfg.outputs.skip != 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
 
       - name: デプロイ
         if: steps.cfg.outputs.skip != 'true'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy docs --project-name=${{ secrets.CF_PROJECT_NAME }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # wrangler-action は古い wrangler を使うことがあるので直接実行する。
+          # 失敗時の原因が分かるよう、出力をそのまま表示する。
+          npx --yes wrangler@4 pages deploy docs \
+            --project-name="${{ secrets.CF_PROJECT_NAME }}" \
+            --branch=main \
+            --commit-dirty=true 2>&1 | tee /tmp/cf.log
+          echo '### デプロイ結果' >> $GITHUB_STEP_SUMMARY
+          { echo '```'; tail -25 /tmp/cf.log; echo '```'; } >> $GITHUB_STEP_SUMMARY
