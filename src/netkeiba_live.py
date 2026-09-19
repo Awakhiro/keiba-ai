@@ -220,7 +220,7 @@ def parse_shutuba(race_id, html, race_date=None):
     df["post_time"] = post or ""
     df["class_level"] = grade or _class_level(race_name + " " + cond)
     df["field_size"] = len(df)
-    df["finish_pos"] = pd.NA
+    df["finish_pos"] = np.nan   # pd.NA だと列が object 型になり学習時と型が食い違う
     return df
 
 
