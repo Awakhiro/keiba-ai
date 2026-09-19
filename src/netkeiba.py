@@ -406,4 +406,6 @@ def to_model_schema(df: pd.DataFrame) -> pd.DataFrame:
         "finish_time", "last3f", "corner_pos", "pace_first3f", "pace_last3f", "horse_weight", "horse_weight_diff", "prize",
         "payout_win", "payout_place",
     ]
-    return d[[c for c in keep if c in d.columns]].reset_index(drop=True)
+    out = d[[c for c in keep if c in d.columns]].reset_index(drop=True)
+    out.attrs = {}   # 付随情報が残っていると concat 時に比較で失敗することがある
+    return out
