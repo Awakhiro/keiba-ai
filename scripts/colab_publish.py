@@ -134,6 +134,10 @@ def publish_to_drive(token, owner, repo, out_dir, test_start="2026-08-01",
     if not os.path.exists(made):
         raise RuntimeError("ページが作られませんでした。上のログを確認してください。")
     shutil.copy(made, html)
+    static = os.path.join(work, "docs", "static.html")
+    if os.path.exists(static):
+        # Drive のプレビューは JavaScript を実行しないので、静的版も置く
+        shutil.copy(static, os.path.join(out_dir, "予想_静的.html"))
     report = os.path.join(work, "docs", "report.md")
     if os.path.exists(report):
         shutil.copy(report, os.path.join(out_dir, "検証レポート.md"))
