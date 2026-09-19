@@ -67,6 +67,14 @@ def clone_private(token, owner, repo, dest="/content/repo"):
     owner = _clean_name(owner, "ユーザー名")
     repo = _clean_name(repo, "リポジトリ名")
 
+    # 今いる場所が消す対象の中だと、削除後にカレントディレクトリが
+    # 存在しなくなり、以降の git 操作が全て失敗する。先に退避する。
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = None
+    if cwd is None or os.path.abspath(cwd).startswith(os.path.abspath(dest)):
+        os.chdir("/content" if os.path.isdir("/content") else "/")
     if os.path.exists(dest):
         shutil.rmtree(dest)
     url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
