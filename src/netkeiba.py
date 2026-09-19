@@ -42,15 +42,40 @@ _session.headers.update({"User-Agent": UA})
 
 
 # ------------------------------------------------------------------ 取得
+# netkeiba はページによって文字コードが違う。
+#   db.netkeiba.com（過去のレース結果・馬の戦績） → EUC-JP
+#   race.netkeiba.com（出馬表・オッズ）           → UTF-8
+# 決め打ちすると片方が文字化けし、コース表記などが読めなくなる。
+# 判定に使う語は必ず日本語にする。ASCII の語（"netkeiba" など）を混ぜると
+# どの文字コードで復号しても一致してしまい、文字化けしたまま採用されてしまう。
+_ENCODING_MARKERS = ("レース", "馬番", "発走", "競走成績", "着順", "騎手")
+
+
+def _decode(resp):
+    """日本語が最も多く読めた文字コードを採用する。"""
+    best, best_score = None, 0
+    for enc in ("UTF-8", "EUC-JP", "CP932"):
+        try:
+            text = resp.content.decode(enc, errors="replace")
+        except (LookupError, AttributeError):
+            continue
+        score = sum(w in text for w in _ENCODING_MARKERS)
+        if score > best_score:
+            best, best_score = text, score
+    if best is not None:
+        return best
+    return resp.content.decode(resp.apparent_encoding or "UTF-8", errors="replace")
+
+
 def fetch(url, sleep=1.0, retries=3):
     last = None
     for i in range(retries):
         try:
             r = _session.get(url, timeout=25)
-            r.encoding = "EUC-JP"
             if r.status_code == 200:
+                text = _decode(r)
                 time.sleep(sleep)
-                return r.text
+                return text
             last = f"status {r.status_code}"
         except Exception as e:  # 通信エラーは待って再試行
             last = str(e)
