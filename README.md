@@ -194,6 +194,11 @@ python build_site.py --history history.csv --entries tomorrow.csv
 2. **同じWi-Fiで見る** — PC で `python serve.py` を実行し、表示された `http://192.168.x.x:8000/予想.html` をスマホで開く。ホーム画面に追加すればアプリのように起動できます。
 3. **常時アクセスしたい場合** — 出力した HTML を GitHub Pages / Netlify / Cloudflare Pages に置く。静的ファイル1枚なので無料枠で足ります。前日夜に `build_site.py` を cron で回して自動更新するのが実用的です。
 
+**Google Drive アプリのプレビューは JavaScript を実行しない**ため、対話式ビューアでは
+中身が表示されない。同時に出力される `予想_静的.html`（`src/static_report.py`）は
+全レース・全買い目を最初から HTML に書き出すので、どの環境でも読める。
+絞り込みや券種の切り替えはできないかわりに、確実に表示される。
+
 ページの操作:
 
 - 上部の「格付け」で S / A以上 / B以上 に絞り込み
