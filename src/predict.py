@@ -36,11 +36,16 @@ class KeibaPredictor:
         entries = entries.copy()
         if "finish_pos" not in entries.columns:
             entries["finish_pos"] = np.nan
-        combined = pd.concat([history, entries], ignore_index=True)
+        target_races = set(entries["race_id"].astype(str))
+        # 同じレースが過去データにもある場合（結果確定後の再実行など）、
+        # 両方が残ると1レースに2組の行ができてしまう。出馬表側を優先する。
+        hist = history[~history["race_id"].astype(str).isin(target_races)]
+        dropped = len(history) - len(hist)
+        if dropped:
+            print(f"過去データから重複 {dropped}行を除外しました")
+        combined = pd.concat([hist, entries], ignore_index=True)
         feat = build_features(combined)
-
-        target_races = set(entries["race_id"])
-        t = feat[feat["race_id"].isin(target_races)].copy()
+        t = feat[feat["race_id"].astype(str).isin(target_races)].copy()
 
         t["p_top3"] = self.model_a.predict(t)        # モデルA: 複勝圏確率
         t["p_win_pure"] = self.model_b.predict(t)    # モデルB: 能力のみの勝率
