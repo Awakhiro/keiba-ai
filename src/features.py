@@ -67,6 +67,10 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
     # 同日内の順序を race_id で固定し、決定的にする
     df = df.sort_values(["date", "race_id", "horse_no"]).reset_index(drop=True)
 
+    # 予想対象のレースは着順が未確定なので欠損になる。
+    # pd.NA や文字列が混ざると列が object 型になり、そこから作る
+    # prev1_finish などが学習時（float）と型が食い違ってしまう。
+    df["finish_pos"] = pd.to_numeric(df["finish_pos"], errors="coerce")
     df["is_win"] = (df["finish_pos"] == 1).astype(float)
     df["is_top3"] = (df["finish_pos"] <= 3).astype(float)
 
