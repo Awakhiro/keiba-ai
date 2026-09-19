@@ -88,6 +88,13 @@ class RaceProbModel:
     # ------------------------------------------------------------ 推論
     def _raw_predict(self, df):
         X = df[self.feature_cols]
+        # 学習時は数値でも、予測時に欠損の入り方で object 型になる列がある。
+        # そのまま渡すと LightGBM が受け付けないので、ここで直す。
+        bad = [c for c in X.columns if X[c].dtype.kind not in "ifb"]
+        if bad:
+            X = X.copy()
+            for c in bad:
+                X[c] = pd.to_numeric(X[c], errors="coerce")
         if HAS_LGB:
             return self.model.predict_proba(X)[:, 1]
         return self.model.predict_proba(X.to_numpy(dtype=float))[:, 1]
