@@ -32,6 +32,20 @@ RACE = "https://race.netkeiba.com"
 
 
 # ------------------------------------------------------------------ レース一覧
+def parse_date(value):
+    """'2026-9-19' '2026/9/19' '20260919' などの表記ゆれを受け付ける。"""
+    if isinstance(value, date):
+        return value
+    t = str(value).strip()
+    m = re.match(r"^(\d{4})\D+(\d{1,2})\D+(\d{1,2})$", t)
+    if m:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    digits = re.sub(r"\D", "", t)
+    if len(digits) == 8:
+        return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+    raise ValueError(f"日付として読めません: {value!r}（例 2026-09-19）")
+
+
 def race_ids_for(d: date, sleep=1.0):
     """
     その日の中央競馬のレースIDを集める。
@@ -312,9 +326,12 @@ def fetch_all_odds(race_id, types=(1, 2, 3, 4, 5, 6, 7, 8), sleep=0.5,
                 f = _first_float(v)
                 if combo is None or f is None:
                     continue
+                # 単勝は ["33.5", "0", "11"] のように2番目が 0 で返る。
+                # 0 は「上限なし」の意味なので、範囲（複勝・ワイド）とは扱わない。
                 if isinstance(v, (list, tuple)) and len(v) >= 2:
                     try:
-                        if float(v[1]) != f:
+                        hi = float(v[1])
+                        if hi > 0 and abs(hi - f) > 1e-9:
                             ranged = True
                     except (ValueError, TypeError):
                         pass
@@ -352,6 +369,7 @@ def fetch_race_card(d: date, race_ids=None, seed_race_id=None, sleep=1.0,
     combo_odds=True なら馬連・馬単・3連複・3連単の実オッズも集める。
     推定配当ではなく実配当で期待値を計算できるようになる。
     """
+    d = parse_date(d)
     if race_ids is None:
         race_ids = (race_ids_from_seed(seed_race_id, sleep) if seed_race_id
                     else race_ids_for(d, sleep))
