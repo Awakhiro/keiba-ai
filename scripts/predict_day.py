@@ -11,7 +11,9 @@
 import argparse
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+JST = timezone(timedelta(hours=9))
 
 import pandas as pd
 
@@ -29,26 +31,37 @@ from src.static_report import write as write_static     # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--date", default=None, help="対象日 (既定: 次の土曜)")
+    ap.add_argument("--date", default=None, help="対象日 (既定: 日本時間の今日)")
     ap.add_argument("--seed-race-id", default=None,
                     help="一覧が取れない場合、その日のレースIDを1つ渡す")
     ap.add_argument("--odds-file", default=None, help="手入力オッズのテキスト")
     ap.add_argument("--min-grade", default="B")
-    ap.add_argument("--out", default="docs/next.html")
+    ap.add_argument("--out", default="docs/today.html")
+    ap.add_argument("--archive", action="store_true",
+                    help="日付つきの控えを docs/archive/ に残す")
+    ap.add_argument("--save-state", default="docs/data/state.json",
+                    help="能力推定を保存する。オッズだけ更新する際に再学習を省ける")
     a = ap.parse_args()
 
     if a.date:
-        target = date.fromisoformat(a.date)
+        from src.netkeiba_live import parse_date
+        target = parse_date(a.date)
     else:
-        today = date.today()
-        target = today + timedelta(days=(5 - today.weekday()) % 7 or 7)
-    print(f"対象日: {target}")
+        # GitHub のランナーは UTC なので、日本時間の「今日」を使う
+        target = datetime.now(JST).date()
+    print(f"対象日: {target}（日本時間 {datetime.now(JST):%Y-%m-%d %H:%M}）")
 
     history = to_model_schema(load_table("data/races"))
     print(f"学習データ {len(history):,}行 / {history['race_id'].nunique():,}レース")
 
     print("\n出馬表を取得します")
-    entries, odds_tables = fetch_race_card(target, seed_race_id=a.seed_race_id)
+    try:
+        entries, odds_tables = fetch_race_card(target, seed_race_id=a.seed_race_id)
+    except RuntimeError as e:
+        # 開催が無い日は正常終了させる（ワークフローを赤くしない）
+        print(f"取得できませんでした: {e}")
+        print("開催が無い日か、まだ出馬表が公開されていません。")
+        return
     if a.odds_file and os.path.exists(a.odds_file):
         entries = apply_manual_odds(entries, open(a.odds_file, encoding="utf-8").read())
 
@@ -76,10 +89,40 @@ def main():
                                   "venues": "・".join(sorted(entries["venue"].unique()))})
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     write_site(payload, "webapp/template.html", a.out)
-    static_path = a.out.replace(".html", "_静的.html")
+    static_path = a.out.replace(".html", "_static.html")
     write_static(payload, static_path, title=f"予想 {target}")
-    print(f"静的版（JavaScript不要）: {static_path}")
-    print(f"\n書き出し: {a.out}（{len(payload['races'])}レース）")
+
+    # 日付つきの控えを残しておく（あとで的中を振り返れる）
+    if a.archive:
+        arc = os.path.join(os.path.dirname(a.out) or ".", "archive")
+        os.makedirs(arc, exist_ok=True)
+        stamp = datetime.now(JST).strftime("%H%M")
+        write_static(payload, os.path.join(arc, f"{target}_{stamp}.html"),
+                     title=f"予想 {target} {stamp[:2]}:{stamp[2:]}")
+
+    print(f"\n書き出し: {a.out}")
+    print(f"          {static_path}（JavaScript 不要。こちらが確実に開けます）")
+    # 能力推定を保存しておく。以降はオッズを取り直すだけで妙味を再計算できる。
+    if a.save_state:
+        import json
+        from src.store import save_table
+        os.makedirs(os.path.dirname(a.save_state) or ".", exist_ok=True)
+        stem = os.path.splitext(a.save_state)[0] + "_card"
+        cols = [c for c in out.columns if c in (
+            "race_id", "date", "venue", "race_no", "race_name", "surface",
+            "distance", "turn", "class_level", "field_size", "post_time",
+            "horse_id", "horse_name", "horse_no", "frame_no", "age", "sex",
+            "weight_carried", "jockey_id", "jockey_name", "trainer_id",
+            "odds_prev_win", "p_top3", "p_win_pure")]
+        save_table(out[cols], stem)
+        with open(a.save_state, "w", encoding="utf-8") as f:
+            json.dump({"date": str(target), "lam2": lam2, "lam3": lam3,
+                       "thresholds": grader.thresholds,
+                       "min_grade": a.min_grade, "card": stem,
+                       "out": a.out}, f, ensure_ascii=False)
+        print(f"能力推定を保存: {a.save_state}")
+
+    print(f"{len(payload['races'])}レースを書き出しました")
     if not has_odds.all():
         print("オッズが欠けたレースがあります。「当てにいく」（モデルA）で見てください。")
 
