@@ -18,7 +18,7 @@ JST = timezone(timedelta(hours=9))
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.store import load_table                       # noqa: E402
+from src.store import load_table, exists                # noqa: E402
 from src.netkeiba import to_model_schema               # noqa: E402
 from src.netkeiba_live import fetch_race_card, apply_manual_odds  # noqa: E402
 from src.netkeiba_result import attach_results                   # noqa: E402
@@ -119,7 +119,8 @@ def main():
             "distance", "turn", "class_level", "field_size", "post_time",
             "horse_id", "horse_name", "horse_no", "frame_no", "age", "sex",
             "weight_carried", "jockey_id", "jockey_name", "trainer_id",
-            "odds_prev_win", "p_top3", "p_win_pure")]
+            "odds_prev_win", "p_top3", "p_win_pure",
+            "p_top3_hi", "p_win_hi")]
         save_table(out[cols], stem)
 
         # 取得したオッズもキャッシュに残す。
