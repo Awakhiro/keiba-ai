@@ -66,6 +66,23 @@ font-size:12px;font-weight:700}
 .idx .hp{margin-left:auto;font-size:12px;color:var(--muted)}
 .sec-h{font-size:11px;color:var(--muted);letter-spacing:.1em;margin:22px 0 0}
 .none{padding:20px 2px;font-size:13px;color:var(--muted)}
+.rec.hit{border-color:var(--ok);background:rgba(29,110,69,.05)}
+.badge{font-size:11px;font-weight:700;padding:2px 8px;border:1.5px solid}
+.badge.hit{color:var(--ok);border-color:var(--ok);background:rgba(29,110,69,.1)}
+.badge.miss{color:var(--muted);border-color:var(--rule)}
+.buy li.win{background:rgba(29,110,69,.12);margin:0 -4px;padding-left:4px;
+padding-right:4px}
+.buy li.win::after{content:"的中";font-size:10px;color:var(--ok);
+font-weight:700;margin-left:7px}
+.fin{display:inline-flex;align-items:center;justify-content:center;
+min-width:20px;height:20px;font-size:11px;font-weight:700;border:1px solid var(--rule);
+color:var(--muted)}
+.fin.p1{background:var(--shu);color:#fff;border-color:var(--shu)}
+.fin.p2,.fin.p3{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+tr.placed td{background:rgba(181,48,30,.05)}
+.idx .res{font-size:11px;font-weight:700;margin-left:6px}
+.idx .res.hit{color:var(--ok)}
+.idx .res.miss{color:var(--muted)}
 .warn{margin-top:7px;padding:7px 9px;border:1px solid var(--shu);
 background:rgba(181,48,30,.06);font-size:11px;line-height:1.6;color:var(--shu)}
 .warn b{font-weight:700}
@@ -115,21 +132,33 @@ def _rec_block(rec, race, mode_label, cls):
     lines = []
     for i, combo in enumerate(rec["combos"]):
         nums = sep.join(_chip(n, frames.get(n, 1)) for n in combo)
-        odds = rec["detail"][i]["odds"] if i < len(rec["detail"]) else None
-        lines.append(f'<li>{nums}<span class="o">{odds:.1f}倍</span></li>'
-                     if odds else f"<li>{nums}</li>")
-    hit = ""
+        d = rec["detail"][i] if i < len(rec["detail"]) else {}
+        odds = d.get("odds")
+        won = ' class="win"' if d.get("hit") else ""
+        lines.append(f'<li{won}>{nums}'
+                     + (f'<span class="o">{odds:.1f}倍</span>' if odds else "")
+                     + "</li>")
+
+    hit, extra = "", ""
     if rec.get("hit") is True:
-        hit = '<span class="pos">的中</span>'
+        hit = '<span class="badge hit">的中</span>'
+        extra = " hit"
+        # 当たった組の配当から、この買い目全体の回収率を出す
+        wons = [x for x in rec["detail"] if x.get("hit")]
+        pts = rec.get("points") or 1
+        if wons and wons[0].get("odds"):
+            ret = wons[0]["odds"] / pts * 100
+            hit += f'<span class="dim">回収 {ret:.0f}%</span>'
     elif rec.get("hit") is False:
-        hit = '<span class="dim">不的中</span>'
+        hit = '<span class="badge miss">不的中</span>'
+
     if rec.get("real_odds"):
         note = ""
     else:
         note = ('<div class="warn">この券種はまだ発売前のため、配当は単勝オッズからの'
                 '<b>推定値</b>です。実際のオッズとは大きく異なることがあります。'
                 '発売後に再実行すると実配当に変わります。</div>')
-    return f"""<div class="rec {cls}">
+    return f"""<div class="rec {cls}{extra}">
 <div class="rec-h"><span class="rec-mode">{mode_label}</span>
 <span class="rec-type">{rec['type']}</span>
 <span class="dim">{rec['points']}点</span>{hit}
@@ -145,7 +174,10 @@ def _horse_table(race):
     rows = []
     show_fin = any(h.get("fin") for h in race["horses"])
     for h in race["horses"]:
-        fin = f'<td>{h["fin"]}</td>' if show_fin else ""
+        f_ = h.get("fin")
+        cls_p = "p1" if f_ == 1 else ("p2" if f_ in (2, 3) else "")
+        fin = (f'<td><span class="fin {cls_p}">{f_}</span></td>'
+               if show_fin and f_ else ("<td></td>" if show_fin else ""))
         edge = h.get("edge")
         edge_s = f'{edge:.2f}' if edge is not None else "-"
         cls = "pos" if (edge and edge >= 1.25 and (h.get("gap") or 0) >= 1) else "dim"
@@ -181,12 +213,17 @@ def _index_row(r):
         hit = f"的中 {rec['p']*100:.0f}%"
     else:
         bet, hit = "", ""
+    res = ""
+    if rec.get("hit") is True:
+        res = '<span class="res hit">的中</span>'
+    elif rec.get("hit") is False:
+        res = '<span class="res miss">×</span>'
     label = f"{r['venue']}{r.get('race_no') or ''}R"
     return (f'<a href="#r{r["race_id"]}" data-grade="{r["grade"]}" data-conf="{r["conf"]}">'
             f'<span class="g g-{r["grade"]}">{r["grade"]}</span>'
             f'<span class="nm">{label}</span>'
             f'<span class="bt">{bet}</span>'
-            f'<span class="hp">{hit}</span></a>')
+            f'<span class="hp">{hit}{res}</span></a>')
 
 
 MODE_JS = """
