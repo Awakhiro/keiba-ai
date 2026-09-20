@@ -239,6 +239,14 @@ def fetch_shutuba(race_id, race_date=None, sleep=1.0):
 
 ODDS_API = f"{RACE}/api/api_get_jra_odds.html"
 
+# レスポンスの式別キーは JRA の式別コードと一致する。
+# 枠連と馬連は 8頭以下だと組み合わせが同一になり構造では見分けられないので、
+# このコードを第一の手がかりにし、形は検証にだけ使う。
+SHIKIBETSU = {"1": "単勝", "2": "複勝", "3": "枠連", "4": "馬連",
+              "5": "ワイド", "6": "馬単", "7": "3連複", "8": "3連単"}
+EXPECTED_SIZE = {"単勝": 1, "複勝": 1, "枠連": 2, "馬連": 2,
+                 "ワイド": 2, "馬単": 2, "3連複": 3, "3連単": 3}
+
 
 def _get_odds_json(race_id, type_no, sleep=0.5):
     for suffix in ("", "&action=init", "&action=update&locale=ja"):
@@ -282,11 +290,15 @@ def _first_float(v):
     return f if f >= 1.0 else None
 
 
-def _classify(table):
+def _classify(table, horse_numbers=None):
     """
-    {組み合わせ: 値} の集合が何の式別かを、キーの形と件数から判定する。
-    ワイドは1組に下限と上限の2値が入るので、そこで馬連と区別できる。
+    {組み合わせ: 値} の集合が何の式別かを、キーの形・件数・使われている番号から判定する。
+
+    枠連は「2桁・順序なし・単一の値」で馬連と形が同じなので、形だけでは見分けられない。
+    枠番は1〜8しか無いので、出走馬の番号と突き合わせて区別する。
     """
+    from math import comb
+
     combos = list(table)
     if not combos:
         return None
@@ -294,11 +306,28 @@ def _classify(table):
     if any(len(c) != size for c in combos):
         return None
 
+    nums = {x for c in combos for x in c}
     if size == 1:
         return "単勝"          # 複勝は値が範囲なので呼び出し側で判定
+
     # 逆順の組み合わせが存在すれば着順を区別する式別（馬単・3連単）
     ordered = any(tuple(reversed(c)) in table
                   for c in combos[:400] if tuple(reversed(c)) != c)
+
+    if horse_numbers:
+        hn = {int(x) for x in horse_numbers}
+        n = len(hn)
+        # 出走馬に無い番号が入っていれば、その式別ではない
+        if not nums <= hn:
+            return None
+        if size == 2 and not ordered and n > 8:
+            # 枠連は枠番(1〜8)しか使わず、組数も馬連よりずっと少ない
+            if max(nums) <= 8 and len(combos) <= comb(8, 2) + 8:
+                return "枠連"
+            # 馬連の組数は C(n,2) に近いはず（発売されていない組は欠ける）
+            if len(combos) < comb(n, 2) * 0.5:
+                return "枠連"
+
     if size == 2:
         return "馬単" if ordered else "馬連"
     if size == 3:
@@ -307,11 +336,15 @@ def _classify(table):
 
 
 def fetch_all_odds(race_id, types=(1, 2, 3, 4, 5, 6, 7, 8), sleep=0.5,
-                   want=("単勝", "馬連", "馬単", "3連複", "3連単")):
+                   want=("単勝", "馬連", "馬単", "3連複", "3連単"),
+                   horse_numbers=None):
     """
     取得できたオッズを式別ごとに返す。
         {"単勝": {馬番: 倍率}, "馬連": {(a,b): 倍率}, ...}
     馬番は実際の番号（ゼロ埋めを外した int）。
+
+    horse_numbers に出走馬の馬番を渡すと、枠連を馬連と取り違えないように
+    番号の照合ができる。単勝が取れた時点で自動的に補われる。
     """
     out = {}
     for t in types:
@@ -340,13 +373,33 @@ def fetch_all_odds(race_id, types=(1, 2, 3, 4, 5, 6, 7, 8), sleep=0.5,
             if len(parsed) < 3:
                 continue
 
-            kind = _classify(parsed)
+            # まず組み合わせの形から判定する。番号の範囲と組数を見るので、
+            # 9頭以上なら枠連と馬連を確実に見分けられる。
+            kind = _classify(parsed, horse_numbers)
+            code_kind = SHIKIBETSU.get(str(_shikibetsu))
+            code_ok = (code_kind is not None
+                       and EXPECTED_SIZE[code_kind] == len(next(iter(parsed))))
+            if kind is None and code_ok:
+                # 形から決められない場合だけ式別コードに頼る
+                kind = code_kind
+            elif kind == "馬連" and code_ok and code_kind in ("枠連", "馬連", "ワイド"):
+                # 8頭以下では枠連と馬連の組み合わせが同一になり形では区別できない。
+                # ここだけは式別コードで決める。
+                kind = code_kind
             if kind == "単勝":
                 # 値が範囲（下限・上限）になっているものが複勝
                 kind = "複勝" if ranged else "単勝"
                 parsed = {c[0]: v for c, v in parsed.items()}
-            elif kind == "馬連" and ranged:
-                kind = "ワイド"
+                # 単勝が取れたら、以降の判定に使う出走馬の番号として使う
+                if kind == "単勝" and not horse_numbers:
+                    horse_numbers = sorted(parsed)
+            elif kind == "複勝":
+                parsed = {c[0]: v for c, v in parsed.items()}
+            # 最後の確認: 出走馬に無い番号が混ざっていたら採用しない
+            if kind and horse_numbers and kind not in ("枠連",):
+                hn = {int(x) for x in horse_numbers}
+                if not {x for c in parsed for x in (c if isinstance(c, tuple) else (c,))} <= hn:
+                    kind = None
             if kind and kind not in out:
                 out[kind] = parsed
         if all(k in out for k in want):
@@ -393,7 +446,8 @@ def fetch_race_card(d: date, race_ids=None, seed_race_id=None, sleep=1.0,
             types = (1, 2, 3, 4, 5, 6, 7, 8) if combo_odds else (1,)
             want = (("単勝", "馬連", "馬単", "3連複", "3連単") if combo_odds
                     else ("単勝",))
-            tables = fetch_all_odds(rid, types=types, want=want)
+            tables = fetch_all_odds(rid, types=types, want=want,
+                                    horse_numbers=df["horse_no"].astype(int).tolist())
             if tables.get("単勝"):
                 df["odds_prev_win"] = (df["horse_no"].map(tables["単勝"])
                                        .fillna(df["odds_prev_win"]))
