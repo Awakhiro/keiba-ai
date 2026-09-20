@@ -18,13 +18,15 @@ from .exotics import (
     build_bets, bet_summary, market_win_probs,
     LAMBDA2_DEFAULT, LAMBDA3_DEFAULT,
 )
-from .confidence import race_confidence, confidence_score, ConfidenceGrader
+from .confidence import (race_confidence, confidence_score, ConfidenceGrader,
+                         model_confidence, model_score, grade_from_score,
+                         value_metrics, value_score)
 from .recommend import recommend_for_race
 
 MARKS = ["◎", "○", "▲", "△", "△", "×"]
 
 # 券種ごとの点数。3〜5点に絞る方針。
-DEFAULT_POINTS = {"馬連": 4, "馬単": 4, "3連複": 5, "3連単": 5}
+DEFAULT_POINTS = {"馬連": 5, "馬単": 5, "3連複": 5, "3連単": 5}
 
 
 def _marks(order_idx, n):
@@ -60,6 +62,8 @@ def _rec_payload(g, mode, odds_by_no, lam2, lam3):
 
     return {
         "skip": False,
+        "tentative": bool(rec.get("参考")),
+        "note": rec.get("理由", "") if rec.get("参考") else "",
         "type": key,
         "points": rec["点数"],
         "shape": rec["形"],
@@ -159,6 +163,21 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
     conf["grade"] = grader.transform(conf["conf_score"])
     cmap = conf.set_index("race_id").to_dict("index")
 
+    # モデルごとの格付け。それぞれの物差しで「読みやすさ」を測る。
+    grades = {}
+    for key, col in (("A", "p_top3"), ("H", "p_top3_hi")):
+        if col not in pred.columns:
+            continue
+        cm = model_confidence(pred, col)
+        cm["score"] = model_score(cm)
+        cm["grade"] = grade_from_score(cm["score"])
+        grades[key] = cm.set_index("race_id")[["score", "grade"]].to_dict("index")
+    # 妙味は別の物差し（市場との乖離）で測る
+    vm = value_metrics(pred)
+    vm["score"] = value_score(vm)
+    vm["grade"] = grade_from_score(vm["score"])
+    grades["B"] = vm.set_index("race_id")[["score", "grade"]].to_dict("index")
+
     order = {"S": 3, "A": 2, "B": 1, "C": 0}
     races = []
 
@@ -216,9 +235,17 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
                                    min_ev=ev_threshold,
                                    real_odds=(odds_tables or {}).get(race_id)),
             },
+            "grades": {k: {"grade": v.get(race_id, {}).get("grade", "C"),
+                           "score": round(float(v.get(race_id, {}).get("score", 0)), 1)}
+                       for k, v in grades.items()},
             "recommend": {
                 "A": _rec_payload(g, "hit", (odds_tables or {}).get(race_id), lam2, lam3),
                 "B": _rec_payload(g, "ev", (odds_tables or {}).get(race_id), lam2, lam3),
+                # 高配当特化モデル。列があるときだけ。
+                "H": (_rec_payload(g.assign(p_top3=g["p_top3_hi"],
+                                            p_blend=g.get("p_win_hi", g["p_blend"])),
+                                   "hit", (odds_tables or {}).get(race_id), lam2, lam3)
+                      if "p_top3_hi" in g.columns else None),
             },
         })
 
