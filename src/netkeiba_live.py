@@ -282,9 +282,17 @@ def _to_combo(key):
 
 
 def _first_float(v):
+    """
+    オッズの文字列を数値にする。
+
+    1000倍以上は "1,481.5" のように桁区切りのカンマが入る。
+    これを外さないと高配当の組だけが捨てられ、
+    期待値の高い買い目が選択的に消えてしまう。
+    """
     val = v[0] if isinstance(v, (list, tuple)) and v else v
+    text = str(val).replace(",", "").replace("，", "").strip()
     try:
-        f = float(str(val).split("-")[0])
+        f = float(text.split("-")[0])
     except (ValueError, TypeError):
         return None
     return f if f >= 1.0 else None
@@ -386,6 +394,9 @@ def fetch_all_odds(race_id, types=(1, 2, 3, 4, 5, 6, 7, 8), sleep=0.5,
                 # 8頭以下では枠連と馬連の組み合わせが同一になり形では区別できない。
                 # ここだけは式別コードで決める。
                 kind = code_kind
+            if kind == "馬連" and ranged:
+                # 値が下限と上限の範囲になっているのはワイドだけ
+                kind = "ワイド"
             if kind == "単勝":
                 # 値が範囲（下限・上限）になっているものが複勝
                 kind = "複勝" if ranged else "単勝"
