@@ -31,8 +31,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.store import load_table                            # noqa: E402
+from src.store import load_table, save_table                # noqa: E402
 from src.netkeiba_live import fetch_all_odds                # noqa: E402
+from src.netkeiba_result import attach_results              # noqa: E402
 from src.value import add_value_columns                     # noqa: E402
 from src.confidence import ConfidenceGrader                 # noqa: E402
 from src.webexport import build_payload, write_site         # noqa: E402
@@ -103,6 +104,25 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
             cache = {}
     cache["_version"] = ODDS_FORMAT_VERSION
 
+    # 発走済みで、まだ着順が入っていないレースの結果を取りにいく
+    finished_new = False
+    finished = []
+    t_now = now_jst()
+    for rid, g in card.groupby("race_id", sort=False):
+        post = parse_post(g["post_time"].iloc[0], day)
+        if post is None:
+            continue
+        # 発走から5分以上たっていれば結果が出ている頃
+        if (t_now - post).total_seconds() / 60.0 >= 5:
+            finished.append(str(rid))
+    if finished:
+        card, got, pays = attach_results(card, finished, sleep=sleep, verbose=False)
+        finished_new = bool(got)
+        if got:
+            save_table(card, st["card"])          # 着順を残して次回に引き継ぐ
+            if verbose:
+                print(f"  結果を取得: {len(got)}レース", flush=True)
+
     upcoming = targets(card, day, lead_min, window_min)
     if verbose:
         print(f"{now_jst():%H:%M} 対象 {len(upcoming)}レース", flush=True)
@@ -136,14 +156,14 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
             kinds = "/".join(k for k in ("単勝",) + COMBO_TYPES if k in entry)
             print(f"  {rid} 発走まで{mins:.0f}分  {kinds}", flush=True)
 
-    if not updated and not always_write:
+    if not updated and not finished_new and not always_write:
         return None
 
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(cache, f)
 
     # 最新オッズを反映して作り直す
-    d = card.copy()
+    d = card.copy()          # 着順が入っていればそのまま引き継がれる
     win_map = {}
     for rid, entry in cache.items():
         if not isinstance(entry, dict):
