@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.store import load_table                       # noqa: E402
 from src.netkeiba import to_model_schema               # noqa: E402
 from src.netkeiba_live import fetch_race_card, apply_manual_odds  # noqa: E402
+from src.netkeiba_result import attach_results                   # noqa: E402
 from src.predict import KeibaPredictor                 # noqa: E402
 from src.features import build_features                # noqa: E402
 from src.backtest import walk_forward, evaluate        # noqa: E402
@@ -64,6 +65,11 @@ def main():
         return
     if a.odds_file and os.path.exists(a.odds_file):
         entries = apply_manual_odds(entries, open(a.odds_file, encoding="utf-8").read())
+
+    # 既に発走したレースがあれば結果を取り込む（途中から実行した場合）
+    entries, got, _pays = attach_results(entries, sleep=1.0, verbose=False)
+    if got:
+        print(f"発走済みレースの結果を取得: {len(got)}レース")
 
     has_odds = entries["odds_prev_win"].notna()
 
