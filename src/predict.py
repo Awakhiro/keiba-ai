@@ -18,18 +18,80 @@ from .confidence import race_confidence, confidence_score, pick_confident_races
 
 
 class KeibaPredictor:
-    def __init__(self):
+    """
+    2つのモデルで予想する。
+
+    当てにいく … 全レースで学習した能力推定。検証での回収率 76.8%
+    荒れ対応   … 2着以内に8番人気以下が来たレースだけで学習し直したもの。82.8%
+
+    荒れ対応は「高配当を狙う」モデルではない。的中時の配当の中央値は
+    当てにいく側とほとんど変わらず（770円 対 780円）、荒れた結果になったときに
+    当てられるという性質。たまに大きいのを拾うので平均配当だけが高くなる。
+
+    2つは当たるレースが大きく異なり、荒れ対応だけが当てたレースが 176件あった。
+    どちらを選ぶかを事前に見分ける方法は、検証では見つかっていない。
+    両方を並べて表示し、判断は人に委ねる。
+    """
+
+    # 2着以内にこの人気以下が来たレースを「荒れたレース」とみなす
+    UPSET_POPULARITY = 8
+    UPSET_MAX_PLACE = 2
+
+    def __init__(self, high_odds=None):
         self.model_a = None
         self.model_b = None
+        self.model_hi_a = None
+        self.model_hi_b = None
+        self.high_odds = high_odds
         self.grader = None
 
-    def train(self, history: pd.DataFrame):
+    def train(self, history: pd.DataFrame, payouts=None):
         feat = build_features(history)
         feat = feat[feat["finish_pos"].notna()]
         self.model_a, self.model_b = make_models()
         self.model_a.fit(feat)
         self.model_b.fit(feat)
+
+        # 荒れ対応モデル。2着以内に人気薄が来たレースだけで学習する。
+        hot = self._upset_races(feat)
+        if hot:
+            sub = feat[feat["race_id"].astype(str).isin(hot)]
+            if sub["race_id"].nunique() >= 500:
+                from .models import RaceProbModel
+                self.model_hi_a = RaceProbModel(
+                    "A_荒れ対応", "is_top3", use_odds=False, expected_sum=3.0)
+                self.model_hi_b = RaceProbModel(
+                    "B_荒れ対応", "is_win", use_odds=False, expected_sum=1.0)
+                self.model_hi_a.fit(sub)
+                self.model_hi_b.fit(sub)
+                print(f"荒れ対応モデルを学習: {sub['race_id'].nunique():,}レース")
+            else:
+                print(f"荒れたレースが少ないため荒れ対応モデルは作りません"
+                      f"（{sub['race_id'].nunique()}レース）")
         return self
+
+    @classmethod
+    def _upset_races(cls, feat):
+        """2着以内に人気薄が来たレースのIDを集める。"""
+        out = set()
+        for race_id, g in feat.groupby("race_id", sort=False):
+            pop = None
+            if "popularity_final" in g.columns:
+                v = g["popularity_final"]
+                # 全馬同じ値なら壊れているので使わない
+                if v.notna().all() and v.nunique() > 1:
+                    pop = v.to_numpy()
+            if pop is None:
+                col = ("odds_win_final" if "odds_win_final" in g.columns
+                       else "odds_prev_win")
+                if col not in g.columns:
+                    continue
+                pop = g[col].rank(method="min").to_numpy()
+            fin = g["finish_pos"].to_numpy(dtype=float)
+            m = (fin <= cls.UPSET_MAX_PLACE) & ~np.isnan(fin)
+            if m.any() and np.nanmax(pop[m]) >= cls.UPSET_POPULARITY:
+                out.add(str(race_id))
+        return out
 
     def predict_day(self, history: pd.DataFrame, entries: pd.DataFrame):
         """entries(予想対象)に対して2モデルの予測を返す。"""
@@ -47,10 +109,15 @@ class KeibaPredictor:
         feat = build_features(combined)
         t = feat[feat["race_id"].astype(str).isin(target_races)].copy()
 
-        t["p_top3"] = self.model_a.predict(t)        # モデルA: 複勝圏確率
-        t["p_win_pure"] = self.model_b.predict(t)    # モデルB: 能力のみの勝率
+        t["p_top3"] = self.model_a.predict(t)        # 当てにいく側の複勝圏確率
+        t["p_win_pure"] = self.model_b.predict(t)    # 能力のみの勝率
         t = add_value_columns(t)                     # 市場と比較して妙味を算出
         t["p_win"] = t["p_blend"]                    # 買い目の確率は混合後を使う
+
+        # 高配当特化モデルの見立ても添える
+        if self.model_hi_a is not None:
+            t["p_top3_hi"] = self.model_hi_a.predict(t)
+            t["p_win_hi"] = self.model_hi_b.predict(t)
         if "odds_prev_place_low" in t.columns:
             t["ev_place"] = t["p_top3"] * t["odds_prev_place_low"]
         t["rank_a"] = t.groupby("race_id")["p_top3"].rank(ascending=False, method="min")
