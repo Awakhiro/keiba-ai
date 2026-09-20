@@ -81,7 +81,8 @@ def targets(card, day, lead_min, window_min):
     return rows
 
 
-def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True):
+def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
+            always_write=False):
     """発走が近いレースのオッズを取り直し、ページを書き直す。"""
     st, card = load_state(state_path)
     day = datetime.fromisoformat(st["date"]).date()
@@ -102,8 +103,11 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True):
         full = i < 2 or mins <= lead_min
         types = (1, 2, 3, 4, 5, 6, 7, 8) if full else (1,)
         want = ("単勝",) + COMBO_TYPES if full else ("単勝",)
+        nums = (card.loc[card["race_id"] == rid, "horse_no"]
+                .astype(int).tolist())
         try:
-            tbl = fetch_all_odds(rid, types=types, sleep=sleep, want=want)
+            tbl = fetch_all_odds(rid, types=types, sleep=sleep, want=want,
+                                 horse_numbers=nums)
         except Exception as e:
             if verbose:
                 print(f"  {rid} 失敗: {e}", flush=True)
@@ -122,7 +126,7 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True):
             kinds = "/".join(k for k in ("単勝",) + COMBO_TYPES if k in entry)
             print(f"  {rid} 発走まで{mins:.0f}分  {kinds}", flush=True)
 
-    if not updated:
+    if not updated and not always_write:
         return None
 
     with open(cache_path, "w", encoding="utf-8") as f:
@@ -190,7 +194,9 @@ def main():
         return 0
 
     if not a.loop:
-        refresh(a.state, a.lead, a.window)
+        # 単発実行では、オッズの更新対象が無くてもページは作り直す
+        # （コードを更新したあとに表示を反映させるため）
+        refresh(a.state, a.lead, a.window, always_write=True)
         return 0
 
     h, m = map(int, a.until.split(":"))
