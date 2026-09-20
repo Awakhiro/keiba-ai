@@ -76,7 +76,8 @@ jobs:
           fi
           if [ -n "$SKIP_TRAIN" ]; then
             # 保存済みの能力推定＋手持ちのオッズでページだけ作り直す
-            python -u scripts/refresh_odds.py --window 999 2>&1 | tee /tmp/p.log
+            python -u scripts/refresh_odds.py --window 999 \
+              --min-grade "${{ inputs.min_grade || 'B' }}" 2>&1 | tee /tmp/p.log
           else
             python -u scripts/predict_day.py \
               --date "${{ inputs.date }}" \
@@ -105,6 +106,7 @@ jobs:
           python -u scripts/refresh_odds.py \
             --loop --until "${{ steps.t.outputs.until }}" \
             --lead 15 --window 45 --interval 4 --commit \
+            --min-grade "${{ inputs.min_grade || 'B' }}" \
             --branch "${{ github.event.repository.default_branch || 'main' }}" 2>&1 | tee /tmp/r.log
           { echo '```'; tail -40 /tmp/r.log; echo '```'; } >> $GITHUB_STEP_SUMMARY
 
