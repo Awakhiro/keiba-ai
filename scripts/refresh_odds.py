@@ -41,6 +41,11 @@ from src.static_report import write as write_static         # noqa: E402
 JST = timezone(timedelta(hours=9))
 COMBO_TYPES = ("馬連", "馬単", "3連複", "3連単")
 
+# オッズの解釈を変えたらここを上げる。
+# 古い解釈で取ったキャッシュが残っていると、取り直さないレースが
+# 誤った値のまま表示され続けてしまう。
+ODDS_FORMAT_VERSION = 2
+
 
 def now_jst():
     return datetime.now(JST)
@@ -92,6 +97,11 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
     if os.path.exists(cache_path):
         with open(cache_path, encoding="utf-8") as f:
             cache = json.load(f)
+        if cache.get("_version") != ODDS_FORMAT_VERSION:
+            if verbose:
+                print("オッズの解釈が変わったので、古いキャッシュを破棄します", flush=True)
+            cache = {}
+    cache["_version"] = ODDS_FORMAT_VERSION
 
     upcoming = targets(card, day, lead_min, window_min)
     if verbose:
@@ -136,6 +146,8 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
     d = card.copy()
     win_map = {}
     for rid, entry in cache.items():
+        if not isinstance(entry, dict):
+            continue
         for no, o in (entry.get("単勝") or {}).items():
             win_map[(rid, int(no))] = float(o)
     if win_map:
@@ -148,6 +160,8 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
 
     odds_tables = {}
     for rid, entry in cache.items():
+        if not isinstance(entry, dict):
+            continue
         t = {}
         for bt in COMBO_TYPES:
             if entry.get(bt):
