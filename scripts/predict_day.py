@@ -115,6 +115,37 @@ def main():
             "weight_carried", "jockey_id", "jockey_name", "trainer_id",
             "odds_prev_win", "p_top3", "p_win_pure")]
         save_table(out[cols], stem)
+
+        # 取得したオッズもキャッシュに残す。
+        # これを保存しないと、発走が近くないレースは後の更新で
+        # オッズが空になり「配当は推定」に落ちてしまう。
+        from scripts.refresh_odds import ODDS_FORMAT_VERSION
+        cache = {"_version": ODDS_FORMAT_VERSION}
+        stamp = datetime.now(JST).strftime("%H:%M")
+        for rid, tables in (odds_tables or {}).items():
+            entry = {"at": stamp}
+            for bt, tbl in tables.items():
+                if bt == "単勝":
+                    entry["単勝"] = {str(k): float(v) for k, v in tbl.items()}
+                elif bt in ("馬連", "馬単", "3連複", "3連単"):
+                    entry[bt] = {"|".join(map(str, k)): float(v)
+                                 for k, v in tbl.items()}
+            if len(entry) > 1:
+                cache[str(rid)] = entry
+        # 単勝しか無いレースも、単勝だけは残しておく
+        for rid, g in entries.groupby("race_id"):
+            key = str(rid)
+            if key in cache or g["odds_prev_win"].isna().all():
+                continue
+            cache[key] = {"at": stamp,
+                          "単勝": {str(int(n)): float(o) for n, o in
+                                  zip(g["horse_no"], g["odds_prev_win"])
+                                  if pd.notna(o)}}
+        cache_path = os.path.join(os.path.dirname(a.save_state), "odds_cache.json")
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        print(f"オッズを保存: {len(cache)-1}レース分")
+
         with open(a.save_state, "w", encoding="utf-8") as f:
             json.dump({"date": str(target), "lam2": lam2, "lam3": lam3,
                        "thresholds": grader.thresholds,
