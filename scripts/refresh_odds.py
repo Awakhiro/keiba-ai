@@ -88,7 +88,7 @@ def targets(card, day, lead_min, window_min):
 
 
 def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
-            always_write=False):
+            always_write=False, min_grade=None):
     """発走が近いレースのオッズを取り直し、ページを書き直す。"""
     st, card = load_state(state_path)
     day = datetime.fromisoformat(st["date"]).date()
@@ -193,7 +193,7 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
     grader = ConfidenceGrader()
     grader.thresholds = st.get("thresholds")
     payload = build_payload(d, grader=grader, lam2=st["lam2"], lam3=st["lam3"],
-                            min_grade=st.get("min_grade", "B"),
+                            min_grade=min_grade or st.get("min_grade", "B"),
                             odds_tables=odds_tables,
                             meta={"date": st["date"], "venues": "中央競馬",
                                   "updated": now_jst().strftime("%H:%M")})
@@ -260,6 +260,8 @@ def main():
     ap.add_argument("--commit", action="store_true",
                     help="更新のたびに git commit / push する")
     ap.add_argument("--branch", default="main", help="push 先のブランチ")
+    ap.add_argument("--min-grade", default=None,
+                    help="この格付け以上を載せる。省略すると保存済みの設定を使う")
     a = ap.parse_args()
 
     if not os.path.exists(a.state):
@@ -270,7 +272,8 @@ def main():
     if not a.loop:
         # 単発実行では、オッズの更新対象が無くてもページは作り直す
         # （コードを更新したあとに表示を反映させるため）
-        refresh(a.state, a.lead, a.window, always_write=True)
+        refresh(a.state, a.lead, a.window, always_write=True,
+                min_grade=a.min_grade)
         return 0
 
     h, m = map(int, a.until.split(":"))
@@ -281,7 +284,7 @@ def main():
 
     while now_jst() < end:
         try:
-            got = refresh(a.state, a.lead, a.window)
+            got = refresh(a.state, a.lead, a.window, min_grade=a.min_grade)
             if got and a.commit:
                 _commit_and_push(a.branch)
         except Exception as e:
