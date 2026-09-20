@@ -51,6 +51,13 @@ def _rec_payload(g, mode, odds_by_no, lam2, lam3):
         want = truth[key]
         hit = any((sorted(c) if key in ("馬連", "3連複") else c) == want
                   for c in rec["買い目"])
+    # どの組が当たったかを買い目ごとに持たせる
+    detail = []
+    for d in rec["明細"]:
+        c = d["combo"]
+        won = bool(truth and (sorted(c) if key in ("馬連", "3連複") else c) == truth[key])
+        detail.append({**d, "hit": won})
+
     return {
         "skip": False,
         "type": key,
@@ -61,7 +68,7 @@ def _rec_payload(g, mode, odds_by_no, lam2, lam3):
         "ret": round(float(rec["期待回収率"]), 2),
         "real_odds": bool(rec["実オッズ"]),
         "combos": rec["買い目"],
-        "detail": rec["明細"],
+        "detail": detail,
         "hit": hit,
         "alts": [{"type": o["券種"], "points": o["点数"],
                   "p": round(float(o["的中確率"]), 4),
