@@ -40,7 +40,15 @@ font-weight:800;border-radius:50%}
 .rmeta{font-size:12px;color:var(--muted);margin-top:2px}
 .rec{border:2px solid var(--ink);padding:11px 12px;margin:12px 0}
 .rec.b{border-color:var(--ai)}
+.rec.h{border-color:#8B5A2B}
+.legend{font-size:11px;color:var(--muted);line-height:1.8;margin:10px 0 0;
+padding:9px 11px;border:1px solid var(--rule);background:var(--card)}
+.legend b{color:var(--ink)}
 .rec.skip{border-style:dashed;border-color:var(--rule);color:var(--muted)}
+.rec.tent{border-width:1px;border-style:dashed}
+.tentnote{font-size:11px;color:var(--muted);margin-top:7px;line-height:1.6}
+.tentmark{font-size:10px;color:var(--muted);border:1px solid var(--rule);
+padding:1px 6px;margin-left:2px}
 .rec-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .rec-mode{font-size:11px;color:var(--muted);letter-spacing:.08em}
 .rec-type{font-size:18px;font-weight:800}
@@ -80,6 +88,12 @@ color:var(--muted)}
 .fin.p1{background:var(--shu);color:#fff;border-color:var(--shu)}
 .fin.p2,.fin.p3{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 tr.placed td{background:rgba(181,48,30,.05)}
+.marks{display:flex;gap:3px;margin-left:8px;flex:none}
+.mk3{display:inline-flex;align-items:center;justify-content:center;
+width:19px;height:19px;font-size:10px;font-weight:700;border:1px solid}
+.mk3.hit{background:var(--ok);color:#fff;border-color:var(--ok)}
+.mk3.miss{color:var(--rule);border-color:var(--rule)}
+.idx .hp{margin-left:auto}
 .idx .res{font-size:11px;font-weight:700;margin-left:6px}
 .idx .res.hit{color:var(--ok)}
 .idx .res.miss{color:var(--muted)}
@@ -117,6 +131,14 @@ def _chip(no, frame):
     return f'<span class="fr" style="background:{bg};color:{fg}">{int(no)}</span>'
 
 
+MODE_LABELS = {
+    "A": ("当てにいく", "", "全レースで学習。検証での回収率 76.8%"),
+    "H": ("荒れ対応", "h", "2着以内に8番人気以下が来たレースで学習。82.8%"),
+    "B": ("妙味", "b", "市場との乖離を狙う。60.6%。参考値"),
+}
+MODE_SHORT = {"A": "当", "H": "荒", "B": "妙"}
+
+
 def _rec_block(rec, race, mode_label, cls):
     if not rec:
         return ""
@@ -140,6 +162,9 @@ def _rec_block(rec, race, mode_label, cls):
                      + "</li>")
 
     hit, extra = "", ""
+    if rec.get("tentative"):
+        extra = " tent"
+        hit = '<span class="tentmark">基準未満</span>' 
     if rec.get("hit") is True:
         hit = '<span class="badge hit">的中</span>'
         extra = " hit"
@@ -152,7 +177,9 @@ def _rec_block(rec, race, mode_label, cls):
     elif rec.get("hit") is False:
         hit = '<span class="badge miss">不的中</span>'
 
-    if rec.get("real_odds"):
+    if rec.get("tentative") and rec.get("note"):
+        note = f'<div class="tentnote">{_html.escape(rec["note"])}</div>'
+    elif rec.get("real_odds"):
         note = ""
     else:
         note = ('<div class="warn">この券種はまだ発売前のため、配当は単勝オッズからの'
@@ -205,25 +232,33 @@ def _sort_key(r):
 
 
 def _index_row(r):
-    rec = (r.get("recommend") or {}).get("A") or {}
+    recs = r.get("recommend") or {}
+    rec = recs.get("A") or {}
     if rec.get("skip"):
         bet, hit = "見送り", ""
     elif rec:
         bet = f"{rec['type']} {rec['points']}点"
-        hit = f"的中 {rec['p']*100:.0f}%"
+        hit = f"{rec['p']*100:.0f}%"
     else:
         bet, hit = "", ""
-    res = ""
-    if rec.get("hit") is True:
-        res = '<span class="res hit">的中</span>'
-    elif rec.get("hit") is False:
-        res = '<span class="res miss">×</span>'
+
+    # 3つのモデルそれぞれの結果を並べる。着順が出たレースだけ表示。
+    marks = []
+    for key in ("A", "H", "B"):
+        x = recs.get(key)
+        if not x or x.get("skip") or x.get("hit") is None:
+            continue
+        cls = "hit" if x["hit"] else "miss"
+        marks.append(f'<span class="mk3 {cls}">{MODE_SHORT[key]}</span>')
+    res = f'<span class="marks">{"".join(marks)}</span>' if marks else ""
+
     label = f"{r['venue']}{r.get('race_no') or ''}R"
-    return (f'<a href="#r{r["race_id"]}" data-grade="{r["grade"]}" data-conf="{r["conf"]}">'
+    return (f'<a href="#r{r["race_id"]}" data-grade="{r["grade"]}" '
+            f'data-conf="{r["conf"]}">'
             f'<span class="g g-{r["grade"]}">{r["grade"]}</span>'
             f'<span class="nm">{label}</span>'
             f'<span class="bt">{bet}</span>'
-            f'<span class="hp">{hit}{res}</span></a>')
+            f'<span class="hp">{hit}</span>{res}</a>')
 
 
 MODE_JS = """
@@ -293,8 +328,9 @@ data-grade="{r['grade']}" data-conf="{r['conf']}">
 <div class="rmeta">{r.get('post_time','')} {r['surface']}{r['distance']}m　
 {r['field_size']}頭　自信度 {r['conf']}　
 {'両モデル一致' if r.get('agree') else 'モデル割れ'}</div></span></div>
-{_rec_block(rec.get('A'), r, '当てにいく', '')}
-{_rec_block(rec.get('B'), r, '妙味を狙う', 'b')}
+{_rec_block(rec.get('A'), r, MODE_LABELS["A"][0], MODE_LABELS["A"][1])}
+{_rec_block(rec.get('H'), r, MODE_LABELS["H"][0], MODE_LABELS["H"][1]) if rec.get('H') else ''}
+{_rec_block(rec.get('B'), r, MODE_LABELS["B"][0], MODE_LABELS["B"][1])}
 {_horse_table(r)}</section>""")
 
     n_pick = sum(1 for r in races if r["grade"] in ("S", "A"))
@@ -312,6 +348,17 @@ data-grade="{r['grade']}" data-conf="{r['conf']}">
 </div><div class="hint" id="hint">発走の早い順に全{len(races)}レース　
 自信度の高いレースだけ見るには右のボタン</div></div>
 {banner}
+<div class="legend">
+<b>当</b> 当てにいく … 全レースで学習。回収率 76.8%、的中 36.2%、最大16連敗<br>
+<b>荒</b> 荒れ対応 … 2着以内に8番人気以下が来たレースだけで学習。
+回収率 82.8%、的中 29.4%、最大23連敗<br>
+<b>妙</b> 妙味 … 市場との乖離を狙う。60.6%。参考値<br>
+<span style="color:var(--muted)">荒れ対応は高配当を狙うモデルではありません。
+的中時の配当の中央値は当てにいく側とほぼ同じ（770円 対 780円）で、
+荒れた結果になったときに当てられるという性質です。
+どちらを選ぶかを事前に見分ける方法は、2,086レースの検証では見つかりませんでした。
+毎回良い方を選べれば 124.9% ですが、その手段が無いので判断はご自身でお願いします。</span>
+</div>
 <div class="idx" id="idx">{''.join(_index_row(r) for r in races)}</div>
 <div class="none" id="empty" style="display:none">A級以上のレースがありません。</div>
 <div class="sec-h">各レースの予想</div>
