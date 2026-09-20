@@ -23,28 +23,49 @@ import pandas as pd
 from .exotics import build_bets, bet_summary, market_win_probs
 
 BET_TYPES = ("馬連", "馬単", "3連複", "3連単")
-POINT_RANGE = (3, 4, 5)
+# 点数は5点に固定する。買い目は自信のある順（的中確率の高い順）に並べる。
+POINT_RANGE = (5,)
 
 # 的中率優先: 合成オッズの下限。当てるだけなら馬連が常に有利だが、
 # それでは配当が見合わないので、一定以上の配当がある券種の中から当たる確率で選ぶ。
 MIN_COMBINED_ODDS = 2.6
 # 的中率優先: さすがに期待回収率がこれを割るものは避ける
 MIN_RETURN_HIT_MODE = 0.55
-# 期待値優先: これより当たらない買い目は続けられないので選ばない
-MIN_HIT_EV_MODE = 0.12
-# 期待値優先: 券種をまたいで期待値を比べると、推定誤差が最も大きい券種
-# （3連単・馬単）が常に勝ってしまう。最良から一定の幅に収まる案の中では、
-# 期待値の僅差を追わず、当たる確率が高い方を選ぶ。
-EV_TIE_BAND = 0.90
-# 期待値優先: これを割るなら見送り
+# 期待値優先: 期待回収率がこれを割るなら「基準未満」として扱う
 MIN_RETURN_EV_MODE = 1.0
+# 券種をまたいで期待値を比べると、推定誤差が最も大きい券種が常に勝つ。
+# 最良から一定の幅に収まる案の中では、当たる確率が高い方を選ぶ。
+EV_TIE_BAND = 0.90
 
-# 期待値優先で買い目に入れてよい馬の上限（能力順）。
-# これを設けないと「確率ほぼゼロ × 高オッズ」の組み合わせが期待値上位を占めてしまう。
-EV_MEMBER_TOP_N = 7
-EV_MEMBER_MIN_P = 0.02
-# 期待値優先での配当上限。推定誤差が配当倍率で増幅されるのを防ぐ。
-EV_MAX_ODDS = {"馬連": 150.0, "馬単": 300.0, "3連複": 400.0, "3連単": 1500.0}
+# 期待値優先の足切り。
+#
+# 以前は「配当の上限」で高配当を機械的に弾いていたが、それでは妙味を狙う趣旨に
+# 反する。上限は撤廃し、代わりに「市場より高く評価している根拠があるか」で絞る。
+# 単に配当が大きいだけの組ではなく、モデルが市場と食い違っている組を選ぶ。
+MIN_HIT_EV_MODE = 0.05
+# 買い目に入れる馬は能力上位のみ。ここは推定誤差が暴れる領域を避けるため残す。
+EV_MEMBER_TOP_N = 8
+EV_MEMBER_MIN_P = 0.015
+# 組全体の乖離。モデルの確率が市場の確率の何倍か。
+# 1.0 なら市場と同じ見立て、大きいほど市場が見落としているという判断。
+MIN_COMBO_EDGE = 1.15
+# 1組あたりの確率の下限。
+# 超人気薄では市場確率もモデル確率もほぼゼロになり、その比（乖離）が
+# 不安定に跳ね上がる。配当で切る代わりに、確率の絶対値で歯止めをかける。
+# 券種ごとの標準的な当たりやすさに合わせて変える。
+MIN_COMBO_PROB = {"馬連": 0.010, "馬単": 0.005, "3連複": 0.004, "3連単": 0.0015}
+
+
+def _combo_edge(probs, market, combo, lam2, lam3, bet_type):
+    """その組について、モデルの確率が市場の確率の何倍かを返す。"""
+    from .exotics import combo_tables
+
+    key = tuple(combo)
+    p = combo_tables(probs, lam2, lam3)[bet_type].get(key)
+    q = combo_tables(market, lam2, lam3)[bet_type].get(key)
+    if not p or not q:
+        return None
+    return p / q
 
 
 def _index_odds(odds_by_no, numbers):
@@ -93,20 +114,49 @@ def _option(probs, market, bet_type, k, odds_by_no, numbers, strategy,
     """ある券種・点数の買い目を1案として評価する。"""
     actual = _index_odds(odds_by_no.get(bet_type) if odds_by_no else None, numbers)
 
-    allowed, max_odds = None, None
+    allowed = None
     if strategy == "ev":
         # 能力上位の馬だけを組み合わせの対象にする
         order = np.argsort(probs)[::-1]
         allowed = {int(i) for i in order[:EV_MEMBER_TOP_N]}
         allowed |= {int(i) for i in np.where(probs >= EV_MEMBER_MIN_P)[0]}
-        max_odds = EV_MAX_ODDS.get(bet_type)
 
-    bets = build_bets(probs, market, bet_type, max_points=k,
+    # 絞り込みで足りなくなるのを避けるため、多めに候補を作ってから選ぶ
+    n_cand = k * 8 if strategy == "ev" else k
+    bets = build_bets(probs, market, bet_type, max_points=n_cand,
                       strategy=strategy, actual_odds=actual,
                       lam2=lam2, lam3=lam3,
-                      allowed_members=allowed, max_odds=max_odds)
+                      allowed_members=allowed)
+
+    if strategy == "ev" and not bets.empty:
+        # 市場より高く評価している組だけを残す（配当の大小では切らない）
+        from .exotics import combo_tables
+        pt = combo_tables(probs, lam2, lam3)[bet_type]
+        qt = combo_tables(market, lam2, lam3)[bet_type]
+        floor = MIN_COMBO_PROB.get(bet_type, 0.002)
+        keep = []
+        for r in bets.itertuples():
+            q = qt.get(tuple(r.combo))
+            p = pt.get(tuple(r.combo))
+            keep.append(bool(p and q and p >= floor and p / q >= MIN_COMBO_EDGE))
+        if sum(keep) >= k:
+            bets = bets[keep].reset_index(drop=True)
+        else:
+            # 条件を満たす組が足りないときは、確率の下限だけ守って埋める
+            keep2 = [bool(pt.get(tuple(r.combo), 0) >= floor)
+                     for r in bets.itertuples()]
+            if any(keep2):
+                bets = bets[keep2].reset_index(drop=True)
     if bets.empty or len(bets) < k:
         return None
+    if strategy == "ev":
+        bets = bets.sort_values("ev", ascending=False).head(k)
+    else:
+        bets = bets.head(k)
+    if len(bets) < k:
+        return None
+    # 表示は常に「自信のある順」＝的中確率の高い順に並べる。
+    bets = bets.sort_values("p", ascending=False).reset_index(drop=True)
     s = bet_summary(bets)
     combos = [[int(numbers[i]) for i in c] for c in bets["combo"]]
     return {
@@ -161,9 +211,12 @@ def recommend(probs, odds_win, bet_types=BET_TYPES, points=POINT_RANGE,
             ok = [o for o in options if o["合成オッズ"] >= MIN_COMBINED_ODDS]
             reason = "配当が見合う範囲で、当たる確率を優先しました"
         if not ok:
-            return {"見送り": True,
-                    "理由": "堅すぎて配当が見合いません",
-                    "候補": sorted(options, key=lambda x: -x["的中確率"])[:3]}
+            best = dict(max(options, key=lambda x: x["的中確率"]))
+            best["見送り"] = False
+            best["参考"] = True
+            best["理由"] = "堅すぎて配当が見合いませんが、当てるならこの形です。"
+            best["次点"] = []
+            return best
         best = max(ok, key=lambda x: x["的中確率"])
     else:
         ok = [o for o in options
@@ -171,15 +224,34 @@ def recommend(probs, odds_win, bet_types=BET_TYPES, points=POINT_RANGE,
               and o["期待回収率"] >= MIN_RETURN_EV_MODE]
         reason = "実オッズと比べて割安な組み合わせを選びました"
         if not ok:
-            return {"見送り": True,
-                    "理由": "期待値が見合う買い目がありません",
-                    "候補": sorted(options, key=lambda x: -x["期待回収率"])[:3]}
+            # 基準に届かなくても、一番ましな案は見せる。
+            # 控除率のぶん期待回収率が1.0を割るのは普通のことなので、
+            # 「何も無い」ではなく「買うなら これ」を示す。
+            fallback = [o for o in options if o["的中確率"] >= MIN_HIT_EV_MODE]
+            best = max(fallback or options, key=lambda x: x["期待回収率"])
+            best = dict(best)
+            best["見送り"] = False
+            best["参考"] = True
+            best["理由"] = ("期待回収率が100%に届きません。"
+                            "控除率を考えると通常のことで、買うなら この形が最良です。")
+            others = [o for o in options if o["券種"] != best["券種"]]
+            seen, alts = set(), []
+            for o in sorted(others, key=lambda x: -x["期待回収率"]):
+                if o["券種"] in seen:
+                    continue
+                seen.add(o["券種"])
+                alts.append(o)
+                if len(alts) == 2:
+                    break
+            best["次点"] = alts
+            return best
         best_ret = max(o["期待回収率"] for o in ok)
         band = [o for o in ok if o["期待回収率"] >= best_ret * EV_TIE_BAND]
         best = max(band, key=lambda x: x["的中確率"])
 
     best = dict(best)
     best["見送り"] = False
+    best["参考"] = False
     best["理由"] = reason
     # 同じ券種の別点数は省き、他券種の次点を2つ添える
     others = [o for o in options if o["券種"] != best["券種"]]
