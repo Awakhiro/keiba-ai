@@ -187,6 +187,45 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
     return updated
 
 
+def _commit_and_push(branch="main"):
+    """
+    更新を push する。
+
+    他から先にコミットが入るとリモートが進み、そのままでは push が拒否される。
+    以前はエラーを捨てていたため、一度失敗するとログに何も出ないまま
+    以後ずっと反映されない状態が続いていた。
+    失敗したら取り込み直して、もう一度試す。
+    """
+    import subprocess
+
+    def sh(cmd):
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
+    sh('git config user.name "github-actions[bot]"')
+    sh('git config user.email '
+       '"41898282+github-actions[bot]@users.noreply.github.com"')
+    sh("git add -A docs/")
+    if sh("git diff --staged --quiet").returncode == 0:
+        return True
+    sh('git commit -q -m "オッズ更新 $(TZ=Asia/Tokyo date +%H:%M)"')
+
+    for attempt in (1, 2):
+        r = sh(f'git push origin HEAD:{branch}')
+        if r.returncode == 0:
+            return True
+        print(f"  push 失敗({attempt}回目): {r.stderr.strip()[-200:]}", flush=True)
+        # リモートの変更を取り込んでから再試行する
+        sh(f"git fetch origin {branch}")
+        rb = sh(f"git rebase origin/{branch}")
+        if rb.returncode != 0:
+            sh("git rebase --abort")
+            # 取り込めない場合は docs だけ相手側に合わせ直す
+            sh(f"git reset --hard origin/{branch}")
+            return False
+    print("  push を諦めました。次の更新で再試行します。", flush=True)
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default="docs/data/state.json")
@@ -200,6 +239,7 @@ def main():
                     help="ループの確認間隔（分）")
     ap.add_argument("--commit", action="store_true",
                     help="更新のたびに git commit / push する")
+    ap.add_argument("--branch", default="main", help="push 先のブランチ")
     a = ap.parse_args()
 
     if not os.path.exists(a.state):
@@ -223,11 +263,7 @@ def main():
         try:
             got = refresh(a.state, a.lead, a.window)
             if got and a.commit:
-                os.system(
-                    'git add -A docs/ && '
-                    'git diff --staged --quiet || '
-                    '(git commit -q -m "オッズ更新 $(TZ=Asia/Tokyo date +%H:%M)" && '
-                    'git push -q origin HEAD 2>/dev/null)')
+                _commit_and_push(a.branch)
         except Exception as e:
             print(f"  更新中のエラー: {e}", flush=True)
         left = (end - now_jst()).total_seconds()
