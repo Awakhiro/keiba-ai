@@ -8,6 +8,11 @@ name: Cloudflare Pages に公開（任意）
 #   CLOUDFLARE_ACCOUNT_ID  ダッシュボードURLの32桁
 #   CF_PROJECT_NAME        プロジェクト名（自動で文字が付く場合があるので実際の名前）
 on:
+  # 「当日の予想」はレース終了まで動き続けるので、その完了を待つと
+  # 午前中にページが反映されない。docs の更新そのものを合図にする。
+  push:
+    paths:
+      - "docs/**"
   workflow_run:
     workflows: ["学習と予想の公開", "当日の予想"]
     types: [completed]
