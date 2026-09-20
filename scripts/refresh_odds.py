@@ -177,6 +177,7 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
 
     d = add_value_columns(d)
     d["p_win"] = d["p_blend"]
+    # 高配当特化モデルの列は保存済みのものをそのまま使う（再学習しない）
 
     odds_tables = {}
     for rid, entry in cache.items():
