@@ -31,6 +31,30 @@ from src.webexport import build_payload, write_site, freeze_finished  # noqa: E4
 from src.static_report import write as write_static     # noqa: E402
 
 
+def drop_scratched(entries):
+    """
+    出走取消とみられる馬を除く。
+
+    発売が始まっているのに、その馬だけ単勝オッズが無い場合は取消とみなす。
+    そのまま残すと中立値で埋められ、取消馬を買い目に入れてしまう。
+    前日で発売前（レースの大半にオッズが無い）なら、判定せずに残す。
+    """
+    d = entries.copy()
+    has = d["odds_prev_win"].notna()
+    share = has.groupby(d["race_id"]).transform("mean")
+    scratched = (~has) & (share >= 0.5)
+    if scratched.any():
+        rows = d[scratched]
+        for rid, g in rows.groupby("race_id"):
+            name = g.iloc[0].get("venue", "")
+            no = g.iloc[0].get("race_no", "")
+            print(f"  出走取消とみなして除外: {name}{no}R "
+                  f"{', '.join(str(int(x)) for x in g['horse_no'])}番")
+        d = d[~scratched].copy()
+        d["field_size"] = d.groupby("race_id")["horse_no"].transform("size")
+    return d
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=None, help="対象日 (既定: 日本時間の今日)")
@@ -74,10 +98,12 @@ def main():
     if got:
         print(f"発走済みレースの結果を取得: {len(got)}レース")
 
+    entries["odds_prev_win"] = pd.to_numeric(entries["odds_prev_win"], errors="coerce")
+    entries = drop_scratched(entries)
     has_odds = entries["odds_prev_win"].notna()
 
-    # オッズが無い馬は、モデルBの入力として中立な値で埋める。
-    # モデルAはオッズを使わないので影響を受けない。
+    # 発売前でオッズが無い馬は、中立な値（全馬同じ支持率）で埋める。
+    # 本命・中穴・穴の能力推定はオッズを使わないので影響を受けない。
     if not has_odds.all():
         entries["odds_prev_win"] = entries["odds_prev_win"].fillna(
             entries.groupby("race_id")["horse_no"].transform("size").astype(float))
