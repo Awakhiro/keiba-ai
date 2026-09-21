@@ -235,6 +235,12 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
 def _add_odds_features(df: pd.DataFrame) -> pd.DataFrame:
     if "odds_prev_win" not in df.columns:
         return df
+    # 取得できなかった馬が None のまま混ざると列が数値型でなくなり、
+    # np.log などが失敗する。必ず数値に直し、欠けはレース内の頭数で埋める
+    # （全馬同じ支持率＝市場情報なし、とみなす中立値）。
+    odds = pd.to_numeric(df["odds_prev_win"], errors="coerce")
+    n = df.groupby("race_id")["race_id"].transform("size").astype(float)
+    df["odds_prev_win"] = odds.fillna(n)
     o = df["odds_prev_win"].clip(lower=1.0)
     df["odds_prev_log"] = np.log(o)
     df["_inv_odds"] = 1.0 / o
