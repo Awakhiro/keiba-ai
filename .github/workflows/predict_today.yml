@@ -60,18 +60,19 @@ jobs:
             echo "skip=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: 朝の予想（学習あり）
+      - name: 朝の予想
         id: morning
         if: steps.t.outputs.skip != 'true'
         run: |
           set -o pipefail
-          # 午後の回では学習を省きたいが、ページの生成は必ず行う。
-          # 学習を飛ばすとHTMLも作られず、古い表示が残ってしまうため。
+          # 学習そのものは data/models に保存され、学習データが増えたときだけ
+          # 走る（scripts/predict_day.py 内で判定）。ここでは当日の能力推定が
+          # すでにあるかどうかだけを見る。
           TODAY=$(TZ=Asia/Tokyo date +%F)
           SKIP_TRAIN=""
           if [ -f docs/data/state.json ] && grep -q "\"$TODAY\"" docs/data/state.json \
              && [ -f docs/today_static.html ]; then
-            echo "本日の能力推定があるので学習は省き、保存済みの推定でページを作り直します"
+            echo "本日の能力推定があるので、保存済みの推定でページを作り直します"
             SKIP_TRAIN="1"
           fi
           if [ -n "$SKIP_TRAIN" ]; then
@@ -95,7 +96,7 @@ jobs:
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A docs/
+          git add -A docs/ data/models/ 2>/dev/null || git add -A docs/
           git diff --staged --quiet || git commit -q -m "当日の予想 $(TZ=Asia/Tokyo date +%H:%M)"
           git push -q origin HEAD:"${{ github.event.repository.default_branch || 'main' }}" || true
 
