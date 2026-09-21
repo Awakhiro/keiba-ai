@@ -66,6 +66,7 @@ def load_state(path):
         st = json.load(f)
     card = load_table(st["card"])
     card["race_id"] = card["race_id"].astype(str)
+    card["odds_prev_win"] = pd.to_numeric(card["odds_prev_win"], errors="coerce")
     return st, card
 
 
