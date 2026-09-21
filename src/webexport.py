@@ -385,7 +385,7 @@ def freeze_finished(payload, data_dir, now=None):
     frozen = (load(fz_p) or {}).get("races", {})
     last = {r["race_id"]: r for r in ((load(lp_p) or {}).get("races") or [])}
 
-    races, newly = [], []
+    races, newly, newly_filled = [], [], []
     for r in payload.get("races", []):
         rid = str(r["race_id"])
         started = (any(h.get("fin") for h in r.get("horses", []))
@@ -395,6 +395,17 @@ def freeze_finished(payload, data_dir, now=None):
             frozen[rid] = copy.deepcopy(last.get(rid) or r)
             newly.append(rid)
         if rid in frozen:
+            # 固定時に無かったモデルだけは、いまの予想で補う。
+            # 途中の不具合で中穴・穴が作られていなかった場合に、
+            # 本命しか表示されない状態が固まってしまうのを防ぐ。
+            # 既にある買い目は変えない。
+            f_rec = frozen[rid].setdefault("recommend", {})
+            for key, cur_rec in (r.get("recommend") or {}).items():
+                if cur_rec and not f_rec.get(key):
+                    added = copy.deepcopy(cur_rec)
+                    added["late"] = True
+                    f_rec[key] = added
+                    newly_filled.append(f"{rid}:{key}")
             fr = copy.deepcopy(frozen[rid])
             cur = {h["no"]: h for h in r.get("horses", [])}
             for h in fr.get("horses", []):
@@ -415,4 +426,6 @@ def freeze_finished(payload, data_dir, now=None):
         json.dump({"date": day, "races": races}, f, ensure_ascii=False)
     if newly:
         print(f"  発走したレースの予想を固定: {len(newly)}レース", flush=True)
+    if newly_filled:
+        print(f"  固定済みで欠けていた予想を補完: {len(newly_filled)}件", flush=True)
     return payload
