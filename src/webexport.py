@@ -18,10 +18,9 @@ from .exotics import (
     build_bets, bet_summary, market_win_probs,
     LAMBDA2_DEFAULT, LAMBDA3_DEFAULT,
 )
-from .confidence import (race_confidence, confidence_score, ConfidenceGrader,
-                         model_confidence, model_score, grade_from_score,
-                         value_metrics, value_score)
+from .confidence import race_confidence, confidence_score, ConfidenceGrader
 from .recommend import recommend_for_race
+from .confidence import model_confidence, grade_from_score, load_grade_config
 
 MARKS = ["◎", "○", "▲", "△", "△", "×"]
 
@@ -181,22 +180,8 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
     conf["grade"] = grader.transform(conf["conf_score"])
     cmap = conf.set_index("race_id").to_dict("index")
 
-    # モデルごとの格付け。それぞれの物差しで「読みやすさ」を測る。
-    grades = {}
-    for key, col in (("A", "p_top3"), ("H", "p_top3_hi")):
-        if col not in pred.columns:
-            continue
-        cm = model_confidence(pred, col)
-        cm["score"] = model_score(cm)
-        cm["grade"] = grade_from_score(cm["score"])
-        grades[key] = cm.set_index("race_id")[["score", "grade"]].to_dict("index")
-    # 妙味は別の物差し（市場との乖離）で測る
-    vm = value_metrics(pred)
-    vm["score"] = value_score(vm)
-    vm["grade"] = grade_from_score(vm["score"])
-    grades["B"] = vm.set_index("race_id")[["score", "grade"]].to_dict("index")
-
     order = {"S": 3, "A": 2, "B": 1, "C": 0}
+    grade_cfg = load_grade_config()
     races = []
 
     for race_id, g in pred.groupby("race_id", sort=False):
@@ -234,6 +219,30 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
                 "fin": (int(r["finish_pos"]) if pd.notna(r.get("finish_pos")) else None),
             })
 
+        recs = {
+            "A": _rec_payload(g, "hit", (odds_tables or {}).get(race_id),
+                              lam2, lam3, MODEL_RULES["A"]),
+            "M": (_rec_payload(g.assign(p_top3=g["p_top3_mid"],
+                                        p_blend=g.get("p_win_mid", g["p_blend"])),
+                               "hit", (odds_tables or {}).get(race_id),
+                               lam2, lam3, MODEL_RULES["M"])
+                  if "p_top3_mid" in g.columns else None),
+            "L": (_rec_payload(g.assign(p_top3=g["p_top3_long"],
+                                        p_blend=g.get("p_win_long", g["p_blend"])),
+                               "hit", (odds_tables or {}).get(race_id),
+                               lam2, lam3, MODEL_RULES["L"])
+                  if "p_top3_long" in g.columns else None),
+        }
+        # 中穴・穴それぞれの自信度。検証で後半まで効いた測り方があるモデルだけ付ける
+        for key, model, col in (("M", "pop6", "p_top3_mid"),
+                                ("L", "odds20", "p_top3_long")):
+            rec, cfg = recs.get(key), grade_cfg.get(model)
+            if rec and not rec.get("skip") and cfg and col in g.columns:
+                sc = model_confidence(g, col, rec=rec,
+                                      base_col="p_top3").get(cfg["method"])
+                rec["grade"] = grade_from_score(sc, cfg.get("thresholds"))
+                rec["grade_desc"] = cfg.get("desc", "")
+
         races.append({
             "race_id": str(race_id),
             "venue": str(g["venue"].iloc[0]),
@@ -253,26 +262,7 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
                                    min_ev=ev_threshold,
                                    real_odds=(odds_tables or {}).get(race_id)),
             },
-            "grades": {k: {"grade": v.get(race_id, {}).get("grade", "C"),
-                           "score": round(float(v.get(race_id, {}).get("score", 0)), 1)}
-                       for k, v in grades.items()},
-            "recommend": {
-                # 本命 … 全レースで学習
-                "A": _rec_payload(g, "hit", (odds_tables or {}).get(race_id),
-                                  lam2, lam3, MODEL_RULES["A"]),
-                # 中穴 … 2着以内に6番人気以下が来たレースで学習
-                "M": (_rec_payload(g.assign(p_top3=g["p_top3_mid"],
-                                            p_blend=g.get("p_win_mid", g["p_blend"])),
-                                   "hit", (odds_tables or {}).get(race_id),
-                                   lam2, lam3, MODEL_RULES["M"])
-                      if "p_top3_mid" in g.columns else None),
-                # 穴 … 馬連が20倍以上だったレースで学習
-                "L": (_rec_payload(g.assign(p_top3=g["p_top3_long"],
-                                            p_blend=g.get("p_win_long", g["p_blend"])),
-                                   "hit", (odds_tables or {}).get(race_id),
-                                   lam2, lam3, MODEL_RULES["L"])
-                      if "p_top3_long" in g.columns else None),
-            },
+            "recommend": recs,
         })
 
     races.sort(key=lambda r: (-order[r["grade"]], -r["conf"]))
