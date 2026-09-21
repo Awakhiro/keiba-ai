@@ -173,17 +173,29 @@ def build_bets(model_probs, market_probs, bet_type, actual_odds=None,
 
 
 def bet_summary(bets: pd.DataFrame):
-    """買い目セット全体の点数・的中率・期待回収率。"""
+    """
+    買い目セット全体の点数・的中率・期待回収率・合成オッズ。
+
+    合成オッズ   … 一般的な定義。1 ÷ Σ(1/オッズ)。オッズだけで決まる。
+                   「どれが当たっても同じ払戻になるよう賭け金を配分したときの倍率」。
+    モデル倍率   … 1 ÷ モデルが見積もった的中確率の合計。
+                   「モデルの見立てで何倍なら元が取れるか」を表す内部指標。
+                   以前はこちらを合成オッズと呼んでいたが、一般的な定義と違うので分けた。
+                   券種を選ぶときの条件（MIN_COMBINED_ODDS）はこちらを使う。
+    """
     if bets is None or bets.empty:
-        return {"点数": 0, "的中確率": 0.0, "期待回収率": 0.0, "合成オッズ": 0.0}
+        return {"点数": 0, "的中確率": 0.0, "期待回収率": 0.0,
+                "合成オッズ": 0.0, "モデル倍率": 0.0}
     n = len(bets)
     hit = float(bets["p"].sum())
     ret = float((bets["p"] * bets["odds"]).sum()) / n     # 1点100円あたり
+    inv = float((1.0 / bets["odds"].clip(lower=1.0)).sum())
     return {
         "点数": n,
         "的中確率": hit,
         "期待回収率": ret,
-        "合成オッズ": float(1.0 / max(hit, 1e-9)) if hit > 0 else 0.0,
+        "合成オッズ": float(1.0 / inv) if inv > 0 else 0.0,
+        "モデル倍率": float(1.0 / hit) if hit > 0 else 0.0,
     }
 
 
