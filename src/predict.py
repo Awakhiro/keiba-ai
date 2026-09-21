@@ -21,29 +21,34 @@ class KeibaPredictor:
     """
     2つのモデルで予想する。
 
-    当てにいく … 全レースで学習した能力推定。検証での回収率 76.8%
-    荒れ対応   … 2着以内に8番人気以下が来たレースだけで学習し直したもの。82.8%
+    本命 … 全レースで学習した能力推定
+    中穴 … 2着以内に6番人気以下が来たレースで学習
+    穴   … 馬連が20倍以上だったレースで学習
 
-    荒れ対応は「高配当を狙う」モデルではない。的中時の配当の中央値は
-    当てにいく側とほとんど変わらず（770円 対 780円）、荒れた結果になったときに
-    当てられるという性質。たまに大きいのを拾うので平均配当だけが高くなる。
+    3,555レースの検証で、いずれも1点あたり配当10倍以上の買い目に絞った場合:
+        本命 75.6% / 中穴 83.8% / 穴 84.0%（的中 17.1% / 16.0% / 15.8%）
 
-    2つは当たるレースが大きく異なり、荒れ対応だけが当てたレースが 176件あった。
-    どちらを選ぶかを事前に見分ける方法は、検証では見つかっていない。
-    両方を並べて表示し、判断は人に委ねる。
+    荒れたレースだけで学習したモデルが本命を上回る傾向は、期間を変えても再現した。
+    ただしどの閾値（何番人気・何倍）が最良かは期間によって入れ替わり、安定しない。
     """
 
-    # 2着以内にこの人気以下が来たレースを「荒れたレース」とみなす
-    UPSET_POPULARITY = 8
+    # 中穴: 2着以内にこの人気以下が来たレースで学習
+    UPSET_POPULARITY = 6
     UPSET_MAX_PLACE = 2
+    # 穴: 馬連がこの倍率以上だったレースで学習
+    LONGSHOT_ODDS = 20.0
 
     def __init__(self, high_odds=None):
         self.model_a = None
         self.model_b = None
-        self.model_hi_a = None
-        self.model_hi_b = None
-        self.high_odds = high_odds
+        self.model_mid_a = None       # 中穴
+        self.model_mid_b = None
+        self.model_long_a = None      # 穴
+        self.model_long_b = None
+        self.high_odds = high_odds or self.LONGSHOT_ODDS
         self.grader = None
+        self.lam2 = 0.81      # 順位割引。学習時に検証データから推定して上書きする
+        self.lam3 = 0.65
 
     def train(self, history: pd.DataFrame, payouts=None):
         feat = build_features(history)
@@ -52,23 +57,44 @@ class KeibaPredictor:
         self.model_a.fit(feat)
         self.model_b.fit(feat)
 
-        # 荒れ対応モデル。2着以内に人気薄が来たレースだけで学習する。
-        hot = self._upset_races(feat)
-        if hot:
-            sub = feat[feat["race_id"].astype(str).isin(hot)]
-            if sub["race_id"].nunique() >= 500:
-                from .models import RaceProbModel
-                self.model_hi_a = RaceProbModel(
-                    "A_荒れ対応", "is_top3", use_odds=False, expected_sum=3.0)
-                self.model_hi_b = RaceProbModel(
-                    "B_荒れ対応", "is_win", use_odds=False, expected_sum=1.0)
-                self.model_hi_a.fit(sub)
-                self.model_hi_b.fit(sub)
-                print(f"荒れ対応モデルを学習: {sub['race_id'].nunique():,}レース")
-            else:
-                print(f"荒れたレースが少ないため荒れ対応モデルは作りません"
-                      f"（{sub['race_id'].nunique()}レース）")
+        # 中穴: 2着以内に人気薄が来たレースだけで学習
+        self.model_mid_a, self.model_mid_b = self._fit_subset(
+            feat, self._upset_races(feat), "中穴")
+
+        # 穴: 馬連が高配当だったレースだけで学習
+        if payouts is not None and len(payouts):
+            hot = {str(r) for r, v in
+                   payouts.set_index("race_id").to_dict("index").items()
+                   if v.get("payout_umaren")
+                   and v["payout_umaren"] / 100.0 >= self.high_odds}
+            self.model_long_a, self.model_long_b = self._fit_subset(
+                feat, hot, "穴")
+        else:
+            print("払戻データが無いため穴モデルは作りません")
         return self
+
+    @staticmethod
+    def _fit_subset(feat, race_ids, label, min_races=500):
+        """
+        指定したレースだけで学習する。対象が少なすぎるときは作らない。
+        """
+        from .models import RaceProbModel
+
+        if not race_ids:
+            return None, None
+        sub = feat[feat["race_id"].astype(str).isin(race_ids)]
+        n = sub["race_id"].nunique()
+        if n < min_races:
+            print(f"{label}モデル: 対象が{n}レースと少ないため作りません")
+            return None, None
+        ma = RaceProbModel(f"A_{label}", "is_top3", use_odds=False,
+                           expected_sum=3.0)
+        mb = RaceProbModel(f"B_{label}", "is_win", use_odds=False,
+                           expected_sum=1.0)
+        ma.fit(sub)
+        mb.fit(sub)
+        print(f"{label}モデルを学習: {n:,}レース")
+        return ma, mb
 
     @classmethod
     def _upset_races(cls, feat):
@@ -114,10 +140,13 @@ class KeibaPredictor:
         t = add_value_columns(t)                     # 市場と比較して妙味を算出
         t["p_win"] = t["p_blend"]                    # 買い目の確率は混合後を使う
 
-        # 高配当特化モデルの見立ても添える
-        if self.model_hi_a is not None:
-            t["p_top3_hi"] = self.model_hi_a.predict(t)
-            t["p_win_hi"] = self.model_hi_b.predict(t)
+        # 中穴・穴それぞれの見立ても添える
+        if self.model_mid_a is not None:
+            t["p_top3_mid"] = self.model_mid_a.predict(t)
+            t["p_win_mid"] = self.model_mid_b.predict(t)
+        if self.model_long_a is not None:
+            t["p_top3_long"] = self.model_long_a.predict(t)
+            t["p_win_long"] = self.model_long_b.predict(t)
         if "odds_prev_place_low" in t.columns:
             t["ev_place"] = t["p_top3"] * t["odds_prev_place_low"]
         t["rank_a"] = t.groupby("race_id")["p_top3"].rank(ascending=False, method="min")
