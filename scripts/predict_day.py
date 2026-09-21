@@ -23,10 +23,11 @@ from src.netkeiba import to_model_schema               # noqa: E402
 from src.netkeiba_live import fetch_race_card, apply_manual_odds  # noqa: E402
 from src.netkeiba_result import attach_results                   # noqa: E402
 from src.predict import KeibaPredictor                 # noqa: E402
+from src.modelstore import load_or_train, describe     # noqa: E402
 from src.features import build_features                # noqa: E402
 from src.backtest import walk_forward, evaluate        # noqa: E402
 from src.exotics import fit_lambdas                    # noqa: E402
-from src.webexport import build_payload, write_site    # noqa: E402
+from src.webexport import build_payload, write_site, freeze_finished  # noqa: E402
 from src.static_report import write as write_static     # noqa: E402
 
 
@@ -40,6 +41,8 @@ def main():
     ap.add_argument("--out", default="docs/today.html")
     ap.add_argument("--archive", action="store_true",
                     help="日付つきの控えを docs/archive/ に残す")
+    ap.add_argument("--retrain", action="store_true",
+                    help="学習データが変わっていなくても学習し直す")
     ap.add_argument("--save-state", default="docs/data/state.json",
                     help="能力推定を保存する。オッズだけ更新する際に再学習を省ける")
     a = ap.parse_args()
@@ -79,20 +82,32 @@ def main():
         entries["odds_prev_win"] = entries["odds_prev_win"].fillna(
             entries.groupby("race_id")["horse_no"].transform("size").astype(float))
 
-    print("\n学習中")
-    feat = build_features(history)
-    _pred, _conf = walk_forward(feat, n_folds=3, verbose=False)
-    _s, _o, grader, _d = evaluate(_pred, _conf)
-    lam2, lam3 = fit_lambdas(_pred)
-
-    p = KeibaPredictor().train(history)
-    p.grader = grader
+    print()
+    p, trained = load_or_train(history, force=a.retrain)
+    if trained or p.grader is None:
+        # 自信度の基準と順位割引は、学習したときだけ作り直す
+        feat = build_features(history)
+        _pred, _conf = walk_forward(feat, n_folds=3, verbose=False)
+        _s, _o, grader, _d = evaluate(_pred, _conf)
+        lam2, lam3 = fit_lambdas(_pred)
+        p.grader = grader
+        p.lam2, p.lam3 = lam2, lam3
+        from src.modelstore import save as save_model
+        save_model(p, history)      # 基準を含めて保存し直す
+    else:
+        grader = p.grader
+        lam2 = getattr(p, "lam2", 0.81)
+        lam3 = getattr(p, "lam3", 0.65)
     out = p.predict_day(history, entries)
 
     payload = build_payload(out, grader=grader, lam2=lam2, lam3=lam3,
                             min_grade=a.min_grade, odds_tables=odds_tables,
                             meta={"date": target.isoformat(),
                                   "venues": "・".join(sorted(entries["venue"].unique()))})
+    # 途中から実行し直した場合も、発走済みのレースは固定済みの予想を使う
+    if a.save_state:
+        payload = freeze_finished(payload, os.path.dirname(a.save_state))
+
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     write_site(payload, "webapp/template.html", a.out)
     static_path = a.out.replace(".html", "_static.html")
@@ -120,7 +135,7 @@ def main():
             "horse_id", "horse_name", "horse_no", "frame_no", "age", "sex",
             "weight_carried", "jockey_id", "jockey_name", "trainer_id",
             "odds_prev_win", "p_top3", "p_win_pure",
-            "p_top3_hi", "p_win_hi")]
+            "p_top3_mid", "p_win_mid", "p_top3_long", "p_win_long")]
         save_table(out[cols], stem)
 
         # 取得したオッズもキャッシュに残す。
