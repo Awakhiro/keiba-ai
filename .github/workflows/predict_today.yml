@@ -65,26 +65,13 @@ jobs:
         if: steps.t.outputs.skip != 'true'
         run: |
           set -o pipefail
-          # 学習そのものは data/models に保存され、学習データが増えたときだけ
-          # 走る（scripts/predict_day.py 内で判定）。ここでは当日の能力推定が
-          # すでにあるかどうかだけを見る。
-          TODAY=$(TZ=Asia/Tokyo date +%F)
-          SKIP_TRAIN=""
-          if [ -f docs/data/state.json ] && grep -q "\"$TODAY\"" docs/data/state.json \
-             && [ -f docs/today_static.html ]; then
-            echo "本日の能力推定があるので、保存済みの推定でページを作り直します"
-            SKIP_TRAIN="1"
-          fi
-          if [ -n "$SKIP_TRAIN" ]; then
-            # 保存済みの能力推定＋手持ちのオッズでページだけ作り直す
-            python -u scripts/refresh_odds.py --window 999 \
-              --min-grade "${{ inputs.min_grade || 'B' }}" 2>&1 | tee /tmp/p.log
-          else
-            python -u scripts/predict_day.py \
-              --date "${{ inputs.date }}" \
-              --min-grade "${{ inputs.min_grade || 'B' }}" \
-              --archive 2>&1 | tee /tmp/p.log
-          fi
+          # 毎回予想を作り直す。学習は data/models に保存済みなので
+          # 学習データが増えていなければ走らない。
+          # 発走済みのレースは frozen.json で予想が固定されるので変わらない。
+          python -u scripts/predict_day.py \
+            --date "${{ inputs.date }}" \
+            --min-grade "${{ inputs.min_grade || 'B' }}" \
+            --archive 2>&1 | tee /tmp/p.log
         continue-on-error: true
 
       - name: 初回の公開
