@@ -40,7 +40,8 @@ font-weight:800;border-radius:50%}
 .rmeta{font-size:12px;color:var(--muted);margin-top:2px}
 .rec{border:2px solid var(--ink);padding:11px 12px;margin:12px 0}
 .rec.b{border-color:var(--ai)}
-.rec.h{border-color:#8B5A2B}
+.rec.m{border-color:#1F4E79}
+.rec.l{border-color:#8B5A2B}
 .legend{font-size:11px;color:var(--muted);line-height:1.8;margin:10px 0 0;
 padding:9px 11px;border:1px solid var(--rule);background:var(--card)}
 .legend b{color:var(--ink)}
@@ -132,11 +133,11 @@ def _chip(no, frame):
 
 
 MODE_LABELS = {
-    "A": ("当てにいく", "", "全レースで学習。検証での回収率 76.8%"),
-    "H": ("荒れ対応", "h", "2着以内に8番人気以下が来たレースで学習。82.8%"),
-    "B": ("妙味", "b", "市場との乖離を狙う。60.6%。参考値"),
+    "A": ("本命", "", "全レースで学習"),
+    "M": ("中穴", "m", "2着以内に6番人気以下が来たレースで学習"),
+    "L": ("穴", "l", "馬連が20倍以上だったレースで学習"),
 }
-MODE_SHORT = {"A": "当", "H": "荒", "B": "妙"}
+MODE_SHORT = {"A": "本", "M": "中", "L": "穴"}
 
 
 def _rec_block(rec, race, mode_label, cls):
@@ -205,9 +206,11 @@ def _horse_table(race):
         cls_p = "p1" if f_ == 1 else ("p2" if f_ in (2, 3) else "")
         fin = (f'<td><span class="fin {cls_p}">{f_}</span></td>'
                if show_fin and f_ else ("<td></td>" if show_fin else ""))
+        # 市場の人気より能力評価が高い馬を目印にする
         edge = h.get("edge")
+        gap = h.get("gap") or 0
         edge_s = f'{edge:.2f}' if edge is not None else "-"
-        cls = "pos" if (edge and edge >= 1.25 and (h.get("gap") or 0) >= 1) else "dim"
+        cls = "pos" if (edge and edge >= 1.25 and gap >= 1) else "dim"
         rows.append(
             f'<tr><td class="mark">{h["markA"]}</td>'
             f'<td>{_chip(h["no"], h["frame"])} {_html.escape(str(h["name"])[:12])}</td>'
@@ -216,7 +219,7 @@ def _horse_table(race):
             f'<td class="{cls}">{edge_s}</td>{fin}</tr>')
     fin_h = "<th>着</th>" if show_fin else ""
     return (f'<table><tr><th>印</th><th>馬</th><th>3着内</th>'
-            f'<th>単勝</th><th>妙味</th>{fin_h}</tr>{"".join(rows)}</table>')
+            f'<th>単勝</th><th>人気差</th>{fin_h}</tr>{"".join(rows)}</table>')
 
 
 def _sort_key(r):
@@ -244,7 +247,7 @@ def _index_row(r):
 
     # 3つのモデルそれぞれの結果を並べる。着順が出たレースだけ表示。
     marks = []
-    for key in ("A", "H", "B"):
+    for key in ("A", "M", "L"):
         x = recs.get(key)
         if not x or x.get("skip") or x.get("hit") is None:
             continue
@@ -329,8 +332,8 @@ data-grade="{r['grade']}" data-conf="{r['conf']}">
 {r['field_size']}頭　自信度 {r['conf']}　
 {'両モデル一致' if r.get('agree') else 'モデル割れ'}</div></span></div>
 {_rec_block(rec.get('A'), r, MODE_LABELS["A"][0], MODE_LABELS["A"][1])}
-{_rec_block(rec.get('H'), r, MODE_LABELS["H"][0], MODE_LABELS["H"][1]) if rec.get('H') else ''}
-{_rec_block(rec.get('B'), r, MODE_LABELS["B"][0], MODE_LABELS["B"][1])}
+{_rec_block(rec.get('M'), r, MODE_LABELS["M"][0], MODE_LABELS["M"][1]) if rec.get('M') else ''}
+{_rec_block(rec.get('L'), r, MODE_LABELS["L"][0], MODE_LABELS["L"][1]) if rec.get('L') else ''}
 {_horse_table(r)}</section>""")
 
     n_pick = sum(1 for r in races if r["grade"] in ("S", "A"))
@@ -349,15 +352,18 @@ data-grade="{r['grade']}" data-conf="{r['conf']}">
 自信度の高いレースだけ見るには右のボタン</div></div>
 {banner}
 <div class="legend">
-<b>当</b> 当てにいく … 全レースで学習。回収率 76.8%、的中 36.2%、最大16連敗<br>
-<b>荒</b> 荒れ対応 … 2着以内に8番人気以下が来たレースだけで学習。
-回収率 82.8%、的中 29.4%、最大23連敗<br>
-<b>妙</b> 妙味 … 市場との乖離を狙う。60.6%。参考値<br>
-<span style="color:var(--muted)">荒れ対応は高配当を狙うモデルではありません。
-的中時の配当の中央値は当てにいく側とほぼ同じ（770円 対 780円）で、
-荒れた結果になったときに当てられるという性質です。
-どちらを選ぶかを事前に見分ける方法は、2,086レースの検証では見つかりませんでした。
-毎回良い方を選べれば 124.9% ですが、その手段が無いので判断はご自身でお願いします。</span>
+<b>本</b> 本命 … 全レースで学習。合成オッズ2倍以上の買い方の中で最も当たりやすいもの<br>
+<b>中</b> 中穴 … 2着以内に6番人気以下が来たレースで学習。
+1点10倍以上・合成オッズ3倍以上<br>
+<b>穴</b> 穴 … 馬連が20倍以上だったレースで学習。1点10倍以上・合成オッズ5倍以上<br>
+<span style="color:var(--muted)">合成オッズは 1 ÷（各組の 1/オッズ の合計）で計算しています。
+買い目は各100円の均等買いなので、当たったときの戻りは「当たった組のオッズ ÷ 点数」です。
+条件を満たす買い方が無いレースは、最も倍率の高い形を「基準未満」として示します。<br>
+中穴は期待回収率100%、穴は120%に届かない場合も「基準未満」とします。
+ただし期待回収率はモデル自身の確率から計算するため、穴寄りのモデルほど高く出がちで、
+実際の回収率が伴う保証はありません。<br>
+荒れたレースで学習したモデルが本命を上回る傾向は、期間を変えても再現しました。
+どれを選ぶかを事前に見分ける方法は見つかっていないので、判断はご自身でお願いします。</span>
 </div>
 <div class="idx" id="idx">{''.join(_index_row(r) for r in races)}</div>
 <div class="none" id="empty" style="display:none">A級以上のレースがありません。</div>
