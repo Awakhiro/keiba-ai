@@ -37,11 +37,29 @@ def _marks(order_idx, n):
     return m
 
 
-def _rec_payload(g, mode, odds_by_no, lam2, lam3):
+# モデルごとの買い目の条件。
+#   min_odds … 1点あたりの配当の下限（倍）
+#   min_ev   … 期待回収率のしきい値。届かなければ「基準未満」として表示
+# 穴寄りのモデルほど期待値のしきい値を高くする。
+MODEL_RULES = {
+    # min_odds … 1点あたりの配当の下限（倍）
+    # min_comb … 合成オッズの下限。1 ÷ Σ(1/各組のオッズ) で計算する一般的な定義
+    # min_ev   … 期待回収率のしきい値。届かなければ「基準未満」として表示
+    "A": {"min_odds": None, "min_comb": 2.0, "min_ev": None},   # 本命
+    "M": {"min_odds": 10.0, "min_comb": 3.0, "min_ev": 1.00},   # 中穴
+    "L": {"min_odds": 10.0, "min_comb": 5.0, "min_ev": 1.20},   # 穴
+}
+
+
+def _rec_payload(g, mode, odds_by_no, lam2, lam3, rule=None):
     """レースごとの推奨買い目。的中判定も付ける。"""
     try:
+        rule = rule or {}
         rec = recommend_for_race(g, mode=mode, odds_by_no=odds_by_no,
-                                 lam2=lam2, lam3=lam3)
+                                 lam2=lam2, lam3=lam3,
+                                 min_odds=rule.get("min_odds"),
+                                 min_ev=rule.get("min_ev"),
+                                 min_comb=rule.get("min_comb"))
     except Exception:
         return None
     if rec.get("見送り"):
@@ -239,13 +257,21 @@ def build_payload(pred: pd.DataFrame, grader: ConfidenceGrader = None,
                            "score": round(float(v.get(race_id, {}).get("score", 0)), 1)}
                        for k, v in grades.items()},
             "recommend": {
-                "A": _rec_payload(g, "hit", (odds_tables or {}).get(race_id), lam2, lam3),
-                "B": _rec_payload(g, "ev", (odds_tables or {}).get(race_id), lam2, lam3),
-                # 高配当特化モデル。列があるときだけ。
-                "H": (_rec_payload(g.assign(p_top3=g["p_top3_hi"],
-                                            p_blend=g.get("p_win_hi", g["p_blend"])),
-                                   "hit", (odds_tables or {}).get(race_id), lam2, lam3)
-                      if "p_top3_hi" in g.columns else None),
+                # 本命 … 全レースで学習
+                "A": _rec_payload(g, "hit", (odds_tables or {}).get(race_id),
+                                  lam2, lam3, MODEL_RULES["A"]),
+                # 中穴 … 2着以内に6番人気以下が来たレースで学習
+                "M": (_rec_payload(g.assign(p_top3=g["p_top3_mid"],
+                                            p_blend=g.get("p_win_mid", g["p_blend"])),
+                                   "hit", (odds_tables or {}).get(race_id),
+                                   lam2, lam3, MODEL_RULES["M"])
+                      if "p_top3_mid" in g.columns else None),
+                # 穴 … 馬連が20倍以上だったレースで学習
+                "L": (_rec_payload(g.assign(p_top3=g["p_top3_long"],
+                                            p_blend=g.get("p_win_long", g["p_blend"])),
+                                   "hit", (odds_tables or {}).get(race_id),
+                                   lam2, lam3, MODEL_RULES["L"])
+                      if "p_top3_long" in g.columns else None),
             },
         })
 
@@ -267,3 +293,126 @@ def write_site(payload, template_path, out_path):
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
     return out_path
+
+
+# ------------------------------------------------------------------ 終了レースの固定
+def _race_started(race, day, now):
+    """発走時刻を過ぎたか。時刻が読めなければ False。"""
+    from datetime import datetime, timedelta, timezone
+    jst = timezone(timedelta(hours=9))
+    try:
+        h, m = str(race.get("post_time") or "").split(":")
+        d = pd.Timestamp(day).date()
+        post = datetime(d.year, d.month, d.day, int(h), int(m), tzinfo=jst)
+    except (ValueError, TypeError):
+        return False
+    return now >= post
+
+
+def _truth_from_horses(horses):
+    by_fin = {h.get("fin"): h["no"] for h in horses if h.get("fin")}
+    if not all(k in by_fin for k in (1, 2, 3)):
+        return None
+    a, b, c = by_fin[1], by_fin[2], by_fin[3]
+    return {"馬連": sorted([a, b]), "馬単": [a, b],
+            "3連複": sorted([a, b, c]), "3連単": [a, b, c]}
+
+
+def _rescore(race):
+    """固定した買い目に、いまの着順で的中を付け直す。"""
+    truth = _truth_from_horses(race.get("horses", []))
+
+    def judge(bt, combo):
+        if truth is None or bt not in truth:
+            return None
+        key = sorted(combo) if bt in ("馬連", "3連複") else list(combo)
+        return key == truth[bt]
+
+    for rec in (race.get("recommend") or {}).values():
+        if not rec or rec.get("skip"):
+            continue
+        bt = rec.get("type")
+        hits = []
+        for d in rec.get("detail", []):
+            d["hit"] = judge(bt, d["combo"])
+            hits.append(d["hit"])
+        rec["hit"] = None if truth is None else any(bool(x) for x in hits)
+
+    for mode in (race.get("bets") or {}).values():
+        for bt, st in (mode or {}).items():
+            pts = st.get("points") or []
+            for p in pts:
+                p["hit"] = bool(judge(bt, p["combo"]))
+            st["result"] = (None if truth is None
+                            else ("hit" if any(p["hit"] for p in pts) else "miss"))
+
+
+def freeze_finished(payload, data_dir, now=None):
+    """
+    発走したレースの予想を固定する。
+
+    当日は何度もページを作り直すため、発走後にオッズが最終値へ動いたり
+    コードを更新したりすると、終わったレースの買い目まで変わってしまう。
+    そこで発走した時点の予想を保存し、以後はそれを表示し続ける。
+
+    固定するのは 買い目・印・確率・格付け。更新するのは 単勝オッズ と 着順 だけで、
+    的中はいまの着順で付け直す。
+
+    保存先:
+        frozen.json        固定したレース（日付が変わったら破棄）
+        last_payload.json  直前に書き出した内容（発走前の最後の予想を拾うため）
+    """
+    import copy
+    import json
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    jst = timezone(timedelta(hours=9))
+    now = now or datetime.now(jst)
+    day = str((payload.get("meta") or {}).get("date") or now.date())[:10]
+    os.makedirs(data_dir, exist_ok=True)
+    fz_p = os.path.join(data_dir, "frozen.json")
+    lp_p = os.path.join(data_dir, "last_payload.json")
+
+    def load(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            return d if d.get("date") == day else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    frozen = (load(fz_p) or {}).get("races", {})
+    last = {r["race_id"]: r for r in ((load(lp_p) or {}).get("races") or [])}
+
+    races, newly = [], []
+    for r in payload.get("races", []):
+        rid = str(r["race_id"])
+        started = (any(h.get("fin") for h in r.get("horses", []))
+                   or _race_started(r, day, now))
+        if started and rid not in frozen:
+            # 発走前に最後に出していた予想を固定する。無ければ今の予想で。
+            frozen[rid] = copy.deepcopy(last.get(rid) or r)
+            newly.append(rid)
+        if rid in frozen:
+            fr = copy.deepcopy(frozen[rid])
+            cur = {h["no"]: h for h in r.get("horses", [])}
+            for h in fr.get("horses", []):
+                c = cur.get(h["no"])
+                if c:
+                    h["odds"] = c.get("odds", h.get("odds"))
+                    h["fin"] = c.get("fin")
+            _rescore(fr)
+            fr["frozen"] = True
+            races.append(fr)
+        else:
+            races.append(r)
+    payload["races"] = races
+
+    with open(fz_p, "w", encoding="utf-8") as f:
+        json.dump({"date": day, "races": frozen}, f, ensure_ascii=False)
+    with open(lp_p, "w", encoding="utf-8") as f:
+        json.dump({"date": day, "races": races}, f, ensure_ascii=False)
+    if newly:
+        print(f"  発走したレースの予想を固定: {len(newly)}レース", flush=True)
+    return payload
