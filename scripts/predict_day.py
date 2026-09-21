@@ -99,6 +99,11 @@ def main():
         lam2 = getattr(p, "lam2", 0.81)
         lam3 = getattr(p, "lam3", 0.65)
     out = p.predict_day(history, entries)
+    have = ["本命"] + (["中穴"] if "p_top3_mid" in out.columns else []) \
+                    + (["穴"] if "p_top3_long" in out.columns else [])
+    print(f"使えるモデル: {' / '.join(have)}")
+    if len(have) < 3:
+        print("  中穴・穴が欠けています。学習データか払戻データが不足している可能性があります。")
 
     payload = build_payload(out, grader=grader, lam2=lam2, lam3=lam3,
                             min_grade=a.min_grade, odds_tables=odds_tables,
