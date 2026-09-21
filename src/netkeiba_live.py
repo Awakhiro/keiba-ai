@@ -479,6 +479,7 @@ def fetch_race_card(d: date, race_ids=None, seed_race_id=None, sleep=1.0,
     if not cards:
         raise RuntimeError("出馬表を1件も取得できませんでした。")
     out = pd.concat(cards, ignore_index=True)
+    out["odds_prev_win"] = pd.to_numeric(out["odds_prev_win"], errors="coerce")
     if verbose:
         print(f"\n{out['race_id'].nunique()}レース / {len(out)}頭")
         print(f"単勝オッズ取得: {out['odds_prev_win'].notna().mean()*100:.0f}%  "
