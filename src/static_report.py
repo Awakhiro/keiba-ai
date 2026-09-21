@@ -163,6 +163,7 @@ def _rec_block(rec, race, mode_label, cls):
                      + "</li>")
 
     hit, extra = "", ""
+    late = ('<span class="tentmark">発走後に作成</span>' if rec.get("late") else "")
     if rec.get("tentative"):
         extra = " tent"
         hit = '<span class="tentmark">基準未満</span>' 
@@ -188,7 +189,7 @@ def _rec_block(rec, race, mode_label, cls):
                 '発売後に再実行すると実配当に変わります。</div>')
     return f"""<div class="rec {cls}{extra}">
 <div class="rec-h"><span class="rec-mode">{mode_label}</span>
-<span class="rec-type">{rec['type']}</span>
+<span class="rec-type">{rec['type']}</span>{late}
 <span class="dim">{rec['points']}点</span>{hit}
 <span class="rec-shape">{_html.escape(rec['shape'])}</span></div>
 <ul class="buy">{''.join(lines)}</ul>
