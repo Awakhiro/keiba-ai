@@ -208,45 +208,84 @@ def choose_mode(conf_score, val_score, margin=12.0):
 
 
 # ------------------------------------------------------------------ モデル別の格付け
-def model_confidence(pred: pd.DataFrame, prob_col="p_top3") -> pd.DataFrame:
+# ------------------------------------------------------------------ モデル別の自信度
+# 穴寄りのモデルでは「自信がある」の意味が本命と同じとは限らない。
+# そこで測り方を複数用意し、検証で一番効くものを選ぶ（scripts/eval_grades.py）。
+# どれもレース単位の絶対的な値で、日によって尺度が変わらないものに限っている
+# （当日の予想でも同じしきい値で格付けできるように）。
+GRADE_METHODS = {
+    "top1":     "本命馬の確率",
+    "margin":   "1位と2位の確率の差",
+    "conc":     "上位3頭への確率の集中",
+    "calm":     "混戦でないこと（1 − 正規化エントロピー）",
+    "hitp":     "選んだ買い目の的中確率",
+    "ev":       "選んだ買い目の期待回収率",
+    "disagree": "本命モデルとの食い違い（全馬の順位の相関）",
+    "edge":     "推している上位3頭の市場との乖離",
+}
+
+
+def model_confidence(g, prob_col, rec=None, base_col="p_top3_base"):
     """
-    任意のモデルの確率分布から、そのモデル自身の自信度を出す。
-
-    的中率モデル専用だった race_confidence を、どのモデルにも使えるようにしたもの。
-    「そのモデルから見て、このレースは読みやすいか」を測る。
+    1レース分について、各測り方の値を返す。
+    g: 出走馬の表, prob_col: そのモデルの複勝圏確率の列, rec: そのモデルの推奨
     """
-    rows = []
-    for race_id, g in pred.groupby("race_id", sort=False):
-        p = np.clip(g[prob_col].to_numpy(dtype=float), 1e-9, None)
-        p = p / p.sum()
-        n = len(p)
-        srt = np.sort(p)[::-1]
-        rows.append({
-            "race_id": race_id,
-            "field_size": n,
-            "top1_p": float(srt[0]),
-            "margin": float(srt[0] - srt[1]) if n > 1 else 0.0,
-            "top3_share": float(srt[:3].sum()),
-            "entropy": _entropy_norm(p),
-        })
-    return pd.DataFrame(rows)
+    p = np.clip(g[prob_col].to_numpy(dtype=float), 1e-9, None)
+    p = p / p.sum()
+    order = np.argsort(p)[::-1]
+    n = len(p)
+    out = {
+        "top1": float(p[order[0]]),
+        "margin": float(p[order[0]] - p[order[1]]) if n > 1 else 0.0,
+        "conc": float(p[order[:3]].sum()),
+        "calm": float(1.0 - _entropy_norm(p)),
+    }
+    if rec is not None and not rec.get("見送り", rec.get("skip", False)):
+        out["hitp"] = float(rec.get("的中確率", rec.get("p", np.nan)))
+        out["ev"] = float(rec.get("期待回収率", rec.get("ret", np.nan)))
+    else:
+        out["hitp"] = np.nan
+        out["ev"] = np.nan
+
+    if base_col in g.columns and base_col != prob_col and n >= 3:
+        # 全馬の順位がどれだけ食い違うか（1 − 順位相関）。0 なら同じ見立て、
+        # 大きいほど本命モデルと違う馬を推している＝独自の情報を持っている。
+        # 上位3頭の入れ替わり数だと 0〜3 の4段階にしかならず格付けが粗くなるので、
+        # 連続的な値にしている。
+        b = g[base_col].to_numpy(dtype=float)
+        ra = pd.Series(p).rank().to_numpy()
+        rb = pd.Series(b).rank().to_numpy()
+        c = np.corrcoef(ra, rb)[0, 1] if np.std(ra) > 0 and np.std(rb) > 0 else 1.0
+        out["disagree"] = float(1.0 - c)
+    else:
+        out["disagree"] = np.nan
+
+    if "odds_prev_win" in g.columns:
+        o = np.clip(pd.to_numeric(g["odds_prev_win"], errors="coerce")
+                    .fillna(n).to_numpy(dtype=float), 1.01, None)
+        q = (1 / o) / (1 / o).sum()
+        out["edge"] = float(np.mean(p[order[:3]] / q[order[:3]]))
+    else:
+        out["edge"] = np.nan
+    return out
 
 
-def model_score(cm: pd.DataFrame) -> pd.Series:
-    """モデル別自信度を 0〜100 にする。"""
-    def z(s):
-        s = s.astype(float)
-        sd = s.std()
-        return (s - s.mean()) / sd if sd > 1e-9 else s * 0.0
-
-    raw = (1.2 * z(cm["top1_p"]) + 1.0 * z(cm["margin"])
-           + 0.6 * z(cm["top3_share"]) - 0.9 * z(cm["entropy"]))
-    return raw.rank(pct=True) * 100
+def grade_from_score(score, thresholds):
+    """しきい値 [B以上, A以上, S以上] で格付けする。"""
+    if score is None or not np.isfinite(score) or not thresholds:
+        return None
+    b, a, s = thresholds
+    return "S" if score >= s else "A" if score >= a else "B" if score >= b else "C"
 
 
-def grade_from_score(score: pd.Series, thresholds=(50.0, 75.0, 90.0)) -> pd.Series:
-    """スコアを S/A/B/C に変換する。"""
-    t = thresholds
-    cond = [score >= t[2], score >= t[1], score >= t[0]]
-    return pd.Series(np.select(cond, ["S", "A", "B"], default="C"),
-                     index=score.index)
+def load_grade_config(path=None):
+    """モデル別の格付け設定（検証で選んだ測り方としきい値）を読む。無ければ空。"""
+    import json
+    import os
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "grade_config.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
