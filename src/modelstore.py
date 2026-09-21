@@ -58,7 +58,12 @@ def _paths(store_dir=STORE_DIR):
     return os.path.join(store_dir, META), os.path.join(store_dir, "models.pkl")
 
 
-def load_saved(history, store_dir=STORE_DIR, version=1):
+# 保存形式の版。モデルの構成を変えたら上げる。
+# 2: 本命・中穴・穴の3段構成。穴モデルの学習に払戻データを渡すようにした。
+MODEL_VERSION = 2
+
+
+def load_saved(history, store_dir=STORE_DIR, version=MODEL_VERSION):
     """
     保存済みモデルがあり、学習データが変わっていなければ読み込む。
     無ければ None。
@@ -85,7 +90,7 @@ def load_saved(history, store_dir=STORE_DIR, version=1):
         return None
 
 
-def save(predictor, history, store_dir=STORE_DIR, version=1, extra=None):
+def save(predictor, history, store_dir=STORE_DIR, version=MODEL_VERSION, extra=None):
     meta_p, pkl_p = _paths(store_dir)
     os.makedirs(store_dir, exist_ok=True)
     with open(pkl_p, "wb") as f:
@@ -125,7 +130,15 @@ def load_or_train(history, store_dir=STORE_DIR, force=False, verbose=True):
     if verbose:
         print(f"学習データが変わったので学習します"
               f"（{history['race_id'].nunique():,}レース）", flush=True)
-    p = KeibaPredictor().train(history)
+    # 穴モデルは「馬連が高配当だったレース」を払戻データから選ぶので、必ず渡す
+    payouts = None
+    try:
+        from .store import load_table, exists
+        if exists("data/pays"):
+            payouts = load_table("data/pays")
+    except Exception:
+        payouts = None
+    p = KeibaPredictor().train(history, payouts=payouts)
     save(p, history, store_dir)
     return p, True
 
