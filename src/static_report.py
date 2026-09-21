@@ -47,6 +47,11 @@ padding:9px 11px;border:1px solid var(--rule);background:var(--card)}
 .legend b{color:var(--ink)}
 .rec.skip{border-style:dashed;border-color:var(--rule);color:var(--muted)}
 .rec.tent{border-width:1px;border-style:dashed}
+.mgrade{display:inline-flex;align-items:center;justify-content:center;
+width:22px;height:22px;border-radius:50%;font-size:12px;font-weight:800;
+border:1.5px solid var(--shu);color:var(--shu);margin-left:4px}
+.mgrade.g-A{border-color:var(--ink);color:var(--ink)}
+.mgrade.g-B,.mgrade.g-C{border-color:var(--rule);color:var(--muted);border-width:1px}
 .tentnote{font-size:11px;color:var(--muted);margin-top:7px;line-height:1.6}
 .tentmark{font-size:10px;color:var(--muted);border:1px solid var(--rule);
 padding:1px 6px;margin-left:2px}
@@ -164,6 +169,9 @@ def _rec_block(rec, race, mode_label, cls):
 
     hit, extra = "", ""
     late = ('<span class="tentmark">発走後に作成</span>' if rec.get("late") else "")
+    if rec.get("grade"):
+        late = (f'<span class="mgrade g-{rec["grade"]}" '
+                f'title="{_html.escape(rec.get("grade_desc", ""))}">{rec["grade"]}</span>') + late
     if rec.get("tentative"):
         extra = " tent"
         hit = '<span class="tentmark">基準未満</span>' 
