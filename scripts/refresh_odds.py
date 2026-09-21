@@ -36,7 +36,7 @@ from src.netkeiba_live import fetch_all_odds                # noqa: E402
 from src.netkeiba_result import attach_results              # noqa: E402
 from src.value import add_value_columns                     # noqa: E402
 from src.confidence import ConfidenceGrader                 # noqa: E402
-from src.webexport import build_payload, write_site         # noqa: E402
+from src.webexport import build_payload, write_site, freeze_finished  # noqa: E402
 from src.static_report import write as write_static         # noqa: E402
 
 JST = timezone(timedelta(hours=9))
@@ -198,6 +198,9 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
                             odds_tables=odds_tables,
                             meta={"date": st["date"], "venues": "中央競馬",
                                   "updated": now_jst().strftime("%H:%M")})
+    # 発走したレースは予想を固定し、単勝オッズと着順だけ更新する
+    payload = freeze_finished(payload, os.path.dirname(state_path))
+
     out = st.get("out", "docs/today.html")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     write_site(payload, "webapp/template.html", out)
