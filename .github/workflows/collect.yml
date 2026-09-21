@@ -66,6 +66,14 @@ jobs:
           git rebase "origin/$BRANCH" || git rebase --abort
           git push origin "HEAD:$BRANCH"
 
+      - name: モデルの更新が必要か
+        if: steps.scrape.outputs.complete == 'true'
+        run: |
+          # 学習データが増えたので、次の予想実行で学習し直される。
+          # （data/models の指紋が合わなくなるため自動で再学習される）
+          echo "データが更新されました。次の予想実行で学習し直されます。" \
+            >> $GITHUB_STEP_SUMMARY
+
       - name: 進捗
         run: |
           if [ "${{ steps.scrape.outputs.complete }}" = "true" ]; then
