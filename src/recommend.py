@@ -26,7 +26,7 @@ BET_TYPES = ("馬連", "馬単", "3連複", "3連単")
 # 点数は5点に固定する。買い目は自信のある順（的中確率の高い順）に並べる。
 POINT_RANGE = (5,)
 
-# 的中率優先: 合成オッズの下限。当てるだけなら馬連が常に有利だが、
+# 的中率優先: モデル倍率（1÷モデルの的中確率）の下限。当てるだけなら馬連が常に有利だが、
 # それでは配当が見合わないので、一定以上の配当がある券種の中から当たる確率で選ぶ。
 MIN_COMBINED_ODDS = 2.6
 # 的中率優先: さすがに期待回収率がこれを割るものは避ける
@@ -110,7 +110,7 @@ def describe_shape(combos, bet_type):
 
 
 def _option(probs, market, bet_type, k, odds_by_no, numbers, strategy,
-            lam2, lam3):
+            lam2, lam3, min_odds=None):
     """ある券種・点数の買い目を1案として評価する。"""
     actual = _index_odds(odds_by_no.get(bet_type) if odds_by_no else None, numbers)
 
@@ -122,7 +122,7 @@ def _option(probs, market, bet_type, k, odds_by_no, numbers, strategy,
         allowed |= {int(i) for i in np.where(probs >= EV_MEMBER_MIN_P)[0]}
 
     # 絞り込みで足りなくなるのを避けるため、多めに候補を作ってから選ぶ
-    n_cand = k * 8 if strategy == "ev" else k
+    n_cand = k * 8 if (strategy == "ev" or min_odds) else k
     bets = build_bets(probs, market, bet_type, max_points=n_cand,
                       strategy=strategy, actual_odds=actual,
                       lam2=lam2, lam3=lam3,
@@ -149,6 +149,12 @@ def _option(probs, market, bet_type, k, odds_by_no, numbers, strategy,
                 bets = bets[keep2].reset_index(drop=True)
     if bets.empty or len(bets) < k:
         return None
+    # 1点あたりの配当の下限。これを割る組は買わない。
+    # 検証では下限を変えても回収率はほぼ動かなかったが（的中率が下がり
+    # 配当が上がって相殺される）、安い配当を避けたいという好みには使える。
+    # 10倍以上にすると、5点買いで当たれば必ず元本を上回る。
+    if min_odds and not bets.empty:
+        bets = bets[bets["odds"] >= min_odds]
     if strategy == "ev":
         bets = bets.sort_values("ev", ascending=False).head(k)
     else:
@@ -165,6 +171,7 @@ def _option(probs, market, bet_type, k, odds_by_no, numbers, strategy,
         "的中確率": s["的中確率"],
         "期待回収率": s["期待回収率"],
         "合成オッズ": s["合成オッズ"],
+        "モデル倍率": s["モデル倍率"],
         "実オッズ": actual is not None,
         "買い目": combos,
         "形": describe_shape(combos, bet_type),
@@ -179,7 +186,7 @@ def _option(probs, market, bet_type, k, odds_by_no, numbers, strategy,
 
 def recommend(probs, odds_win, bet_types=BET_TYPES, points=POINT_RANGE,
               odds_by_no=None, mode="hit", lam2=0.81, lam3=0.65,
-              numbers=None):
+              numbers=None, min_odds=None, min_ev=None, min_comb=None):
     """
     1レース分の推奨を返す。
 
@@ -196,25 +203,37 @@ def recommend(probs, odds_win, bet_types=BET_TYPES, points=POINT_RANGE,
     for bt in bet_types:
         for k in points:
             o = _option(probs, market, bt, k, odds_by_no or {}, numbers,
-                        strategy, lam2, lam3)
+                        strategy, lam2, lam3, min_odds=min_odds)
             if o:
                 options.append(o)
     if not options:
         return {"見送り": True, "理由": "買い目を作れませんでした", "候補": []}
 
     if mode == "hit":
-        ok = [o for o in options
-              if o["合成オッズ"] >= MIN_COMBINED_ODDS
-              and o["期待回収率"] >= MIN_RETURN_HIT_MODE]
-        reason = "当たる確率を最優先に選びました"
+        if min_comb:
+            # 合成オッズ（1÷Σ(1/オッズ)）が基準以上の券種から、最も当たりやすいものを選ぶ
+            ok = [o for o in options
+                  if o["合成オッズ"] >= min_comb
+                  and o["期待回収率"] >= MIN_RETURN_HIT_MODE]
+            reason = f"合成オッズ {min_comb:g}倍以上の中で、当たる確率を最優先に選びました"
+            if not ok:
+                ok = [o for o in options if o["合成オッズ"] >= min_comb]
+        else:
+            # 条件の指定が無いときは従来どおり（モデル倍率で判定）
+            ok = [o for o in options
+                  if o["モデル倍率"] >= MIN_COMBINED_ODDS
+                  and o["期待回収率"] >= MIN_RETURN_HIT_MODE]
+            reason = "当たる確率を最優先に選びました"
+            if not ok:
+                ok = [o for o in options if o["モデル倍率"] >= MIN_COMBINED_ODDS]
+                reason = "配当が見合う範囲で、当たる確率を優先しました"
         if not ok:
-            ok = [o for o in options if o["合成オッズ"] >= MIN_COMBINED_ODDS]
-            reason = "配当が見合う範囲で、当たる確率を優先しました"
-        if not ok:
-            best = dict(max(options, key=lambda x: x["的中確率"]))
+            best = dict(max(options, key=lambda x: x["合成オッズ"]))
             best["見送り"] = False
             best["参考"] = True
-            best["理由"] = "堅すぎて配当が見合いませんが、当てるならこの形です。"
+            best["理由"] = (f"合成オッズ {min_comb:g}倍に届く券種がありません。"
+                            f"最も倍率の高い形を示します。" if min_comb else
+                            "堅すぎて配当が見合いませんが、当てるならこの形です。")
             best["次点"] = []
             return best
         best = max(ok, key=lambda x: x["的中確率"])
@@ -253,6 +272,13 @@ def recommend(probs, odds_win, bet_types=BET_TYPES, points=POINT_RANGE,
     best["見送り"] = False
     best["参考"] = False
     best["理由"] = reason
+    # 期待値のしきい値。届かなければ買い目は出すが「基準未満」とする。
+    # 期待値はモデル自身の確率から計算するので、高く出ても
+    # 実際の回収率が伴う保証はない点に注意。
+    if min_ev and best["期待回収率"] < min_ev:
+        best["参考"] = True
+        best["理由"] = (f"期待回収率 {best['期待回収率']*100:.0f}% が"
+                        f"基準の {min_ev*100:.0f}% に届きません。")
     # 同じ券種の別点数は省き、他券種の次点を2つ添える
     others = [o for o in options if o["券種"] != best["券種"]]
     key = (lambda x: -x["的中確率"]) if mode == "hit" else (lambda x: -x["期待回収率"])
@@ -270,7 +296,8 @@ def recommend(probs, odds_win, bet_types=BET_TYPES, points=POINT_RANGE,
 
 def recommend_for_race(g: pd.DataFrame, mode="hit", prob_col=None,
                        odds_by_no=None, lam2=0.81, lam3=0.65,
-                       bet_types=BET_TYPES, points=POINT_RANGE):
+                       bet_types=BET_TYPES, points=POINT_RANGE,
+                       min_odds=None, min_ev=None, min_comb=None):
     """
     出走表1レース分のDataFrameから推奨を作る。
 
@@ -286,7 +313,8 @@ def recommend_for_race(g: pd.DataFrame, mode="hit", prob_col=None,
                      bet_types=bet_types, points=points,
                      odds_by_no=odds_by_no, mode=mode,
                      lam2=lam2, lam3=lam3,
-                     numbers=g["horse_no"].to_numpy())
+                     numbers=g["horse_no"].to_numpy(),
+                     min_odds=min_odds, min_ev=min_ev, min_comb=min_comb)
 
 
 def format_recommendation(rec, race_label=""):
