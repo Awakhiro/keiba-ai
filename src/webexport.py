@@ -286,6 +286,53 @@ def write_site(payload, template_path, out_path):
 
 
 # ------------------------------------------------------------------ 終了レースの固定
+# 発走の何分前に買い目を固定するか
+LOCK_MINUTES = 10
+
+
+def _minutes_to_post(race, day, now):
+    """発走までの残り分数。時刻が読めなければ None。発走後は負の値。"""
+    from datetime import datetime, timedelta, timezone
+    jst = timezone(timedelta(hours=9))
+    try:
+        h, m = str(race.get("post_time") or "").split(":")
+        d = pd.Timestamp(day).date()
+        post = datetime(d.year, d.month, d.day, int(h), int(m), tzinfo=jst)
+    except (ValueError, TypeError):
+        return None
+    return (post - now).total_seconds() / 60.0
+
+
+def _refresh_locked_odds(race, odds_by_type):
+    """
+    固定した買い目の各組に、いまのオッズを入れ直す。
+    買い目は変えずに、配当・合成オッズ・期待回収率だけ最新にする。
+    """
+    if not odds_by_type:
+        return
+    for rec in (race.get("recommend") or {}).values():
+        if not rec or rec.get("skip"):
+            continue
+        tbl = odds_by_type.get(rec.get("type")) or {}
+        if not tbl:
+            continue
+        changed = False
+        for d in rec.get("detail", []):
+            c = tuple(int(x) for x in d["combo"])
+            o = tbl.get(c)
+            if o is None:
+                o = tbl.get(tuple(sorted(c)))
+            if o:
+                d["odds"] = round(float(o), 1)
+                d["ev"] = round(float(d.get("p", 0)) * float(o), 2)
+                changed = True
+        if changed and rec.get("detail"):
+            inv = sum(1.0 / max(float(d["odds"]), 1.0) for d in rec["detail"])
+            rec["odds"] = round(1.0 / inv, 1) if inv > 0 else rec.get("odds")
+            rec["ret"] = round(sum(float(d.get("p", 0)) * float(d["odds"])
+                                   for d in rec["detail"]) / len(rec["detail"]), 2)
+
+
 def _race_started(race, day, now):
     """発走時刻を過ぎたか。時刻が読めなければ False。"""
     from datetime import datetime, timedelta, timezone
@@ -337,9 +384,13 @@ def _rescore(race):
                             else ("hit" if any(p["hit"] for p in pts) else "miss"))
 
 
-def freeze_finished(payload, data_dir, now=None):
+def freeze_finished(payload, data_dir, now=None, odds_tables=None,
+                    lock_minutes=LOCK_MINUTES):
     """
-    発走したレースの予想を固定する。
+    発走が近づいたレースの買い目を固定する。
+
+    発走の lock_minutes 分前を切った最初の更新で、その時点の買い目を固定する。
+    買う時点の買い目がそのまま残り、以後はオッズと着順だけが更新される。
 
     当日は何度もページを作り直すため、発走後にオッズが最終値へ動いたり
     コードを更新したりすると、終わったレースの買い目まで変わってしまう。
@@ -378,11 +429,17 @@ def freeze_finished(payload, data_dir, now=None):
     races, newly, newly_filled = [], [], []
     for r in payload.get("races", []):
         rid = str(r["race_id"])
-        started = (any(h.get("fin") for h in r.get("horses", []))
-                   or _race_started(r, day, now))
-        if started and rid not in frozen:
-            # 発走前に最後に出していた予想を固定する。無ければ今の予想で。
-            frozen[rid] = copy.deepcopy(last.get(rid) or r)
+        mins = _minutes_to_post(r, day, now)
+        finished = any(h.get("fin") for h in r.get("horses", []))
+        locked = finished or (mins is not None and mins <= lock_minutes)
+        if locked and rid not in frozen:
+            if mins is not None and mins > 0 and not finished:
+                # 発走前の、締め切り間近の更新。いまの買い目を固定する。
+                frozen[rid] = copy.deepcopy(r)
+            else:
+                # すでに発走後（途中から実行し直した場合など）。
+                # 直前に出していた予想があればそれを、無ければいまの予想を使う。
+                frozen[rid] = copy.deepcopy(last.get(rid) or r)
             newly.append(rid)
         if rid in frozen:
             # 固定時に無かったモデルだけは、いまの予想で補う。
@@ -403,6 +460,7 @@ def freeze_finished(payload, data_dir, now=None):
                 if c:
                     h["odds"] = c.get("odds", h.get("odds"))
                     h["fin"] = c.get("fin")
+            _refresh_locked_odds(fr, (odds_tables or {}).get(rid))
             _rescore(fr)
             fr["frozen"] = True
             races.append(fr)
@@ -415,7 +473,7 @@ def freeze_finished(payload, data_dir, now=None):
     with open(lp_p, "w", encoding="utf-8") as f:
         json.dump({"date": day, "races": races}, f, ensure_ascii=False)
     if newly:
-        print(f"  発走したレースの予想を固定: {len(newly)}レース", flush=True)
+        print(f"  買い目を固定（発走{lock_minutes}分前）: {len(newly)}レース", flush=True)
     if newly_filled:
         print(f"  固定済みで欠けていた予想を補完: {len(newly_filled)}件", flush=True)
     return payload
