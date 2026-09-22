@@ -200,7 +200,8 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
                             meta={"date": st["date"], "venues": "中央競馬",
                                   "updated": now_jst().strftime("%H:%M")})
     # 発走したレースは予想を固定し、単勝オッズと着順だけ更新する
-    payload = freeze_finished(payload, os.path.dirname(state_path))
+    payload = freeze_finished(payload, os.path.dirname(state_path),
+                              odds_tables=odds_tables)
 
     out = st.get("out", "docs/today.html")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
@@ -210,6 +211,43 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
     if verbose:
         print(f"  → 更新 {len(payload['races'])}レース分を書き出し", flush=True)
     return updated
+
+
+def deploy_site(verbose=True):
+    """
+    Cloudflare Pages に直接公開する。
+
+    GitHub Actions が自分で行ったコミットは、別のワークフローを起動しない仕様になっている。
+    そのためループ内でコミットしても公開用のワークフローが動かず、
+    ジョブが終わるまでページに反映されなかった。ここから直接公開する。
+
+    環境変数 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID / CF_PROJECT_NAME が
+    無ければ何もしない。
+    """
+    import shutil
+    import subprocess
+
+    proj = os.environ.get("CF_PROJECT_NAME")
+    if not (proj and os.environ.get("CLOUDFLARE_API_TOKEN")
+            and os.environ.get("CLOUDFLARE_ACCOUNT_ID")):
+        return False
+    site = "/tmp/site"
+    shutil.rmtree(site, ignore_errors=True)
+    # 内部用のデータ（オッズの控えなど）は公開しない
+    shutil.copytree("docs", site, ignore=shutil.ignore_patterns("data"))
+    if os.path.exists(os.path.join(site, "today_static.html")):
+        shutil.copy(os.path.join(site, "today_static.html"),
+                    os.path.join(site, "index.html"))
+    r = subprocess.run(
+        ["npx", "--yes", "wrangler@4", "pages", "deploy", site,
+         f"--project-name={proj}", "--branch=main", "--commit-dirty=true"],
+        capture_output=True, text=True, timeout=300)
+    if verbose:
+        if r.returncode == 0:
+            print(f"  → ページを公開しました {now_jst():%H:%M}", flush=True)
+        else:
+            print(f"  公開に失敗: {(r.stderr or r.stdout)[-300:]}", flush=True)
+    return r.returncode == 0
 
 
 def _commit_and_push(branch="main"):
@@ -265,6 +303,8 @@ def main():
     ap.add_argument("--commit", action="store_true",
                     help="更新のたびに git commit / push する")
     ap.add_argument("--branch", default="main", help="push 先のブランチ")
+    ap.add_argument("--deploy", action="store_true",
+                    help="更新のたびに Cloudflare Pages へ直接公開する")
     ap.add_argument("--min-grade", default=None,
                     help="この格付け以上を載せる。省略すると保存済みの設定を使う")
     a = ap.parse_args()
@@ -292,6 +332,8 @@ def main():
             got = refresh(a.state, a.lead, a.window, min_grade=a.min_grade)
             if got and a.commit:
                 _commit_and_push(a.branch)
+            if got and a.deploy:
+                deploy_site()
         except Exception as e:
             print(f"  更新中のエラー: {e}", flush=True)
         left = (end - now_jst()).total_seconds()
