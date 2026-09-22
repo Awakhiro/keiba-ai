@@ -137,7 +137,8 @@ def main():
                                   "venues": "・".join(sorted(entries["venue"].unique()))})
     # 途中から実行し直した場合も、発走済みのレースは固定済みの予想を使う
     if a.save_state:
-        payload = freeze_finished(payload, os.path.dirname(a.save_state))
+        payload = freeze_finished(payload, os.path.dirname(a.save_state),
+                                  odds_tables=odds_tables)
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     write_site(payload, "webapp/template.html", a.out)
