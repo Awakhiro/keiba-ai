@@ -70,22 +70,51 @@ def load_state(path):
     return st, card
 
 
-def targets(card, day, lead_min, window_min):
+# 確定オッズを取りに行く、発走後の時間帯（分）
+FINAL_FROM, FINAL_TO = -12, -3
+# 発走まで遠いレースを取り直す間隔（分）と、1回の更新で取り直す上限
+STALE_MINUTES, STALE_PER_CYCLE = 30, 3
+
+
+def _age_minutes(entry, now):
+    """キャッシュのオッズが何分前のものか。無ければ大きな値。"""
+    try:
+        h, m = entry["at"].split(":")
+        t = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+        return (now - t).total_seconds() / 60.0
+    except (KeyError, ValueError, AttributeError):
+        return 1e9
+
+
+def targets(card, day, lead_min, window_min, cache=None):
     """
-    発走まで lead_min 分を切り、かつ window_min 分以内のレースを返す。
-    既に発走したレースは対象外。
+    今回オッズを取り直すレースを選ぶ。
+
+      発走まで window_min 分以内           … 毎回、全式別を取り直す
+      発走後 3〜12分（確定オッズがまだ）   … 一度だけ全式別を取り直して確定値にする
+      それより先のレース                   … 30分以上たったものを、1回に3レースまで
+
+    以前は連勝式を取り直すのが直近2レースだけで、それ以外は朝のオッズのまま
+    表示されていた。また発走2分後で止めていたので確定オッズが入らなかった。
     """
     t = now_jst()
-    rows = []
+    cache = cache or {}
+    near, final, far = [], [], []
     for rid, g in card.groupby("race_id", sort=False):
         post = parse_post(g["post_time"].iloc[0], day)
         if post is None:
             continue
         mins = (post - t).total_seconds() / 60.0
+        entry = cache.get(str(rid), {}) if isinstance(cache.get(str(rid)), dict) else {}
         if -2 <= mins <= window_min:
-            rows.append((rid, mins, post))
-    rows.sort(key=lambda x: x[1])
-    return rows
+            near.append((rid, mins, post))
+        elif FINAL_FROM <= mins <= FINAL_TO and not entry.get("final"):
+            final.append((rid, mins, post))
+        elif mins > window_min and _age_minutes(entry, t) >= STALE_MINUTES:
+            far.append((rid, mins, post))
+    near.sort(key=lambda x: x[1])
+    far.sort(key=lambda x: x[1])
+    return near + final + far[:STALE_PER_CYCLE]
 
 
 def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
@@ -124,16 +153,16 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
             if verbose:
                 print(f"  結果を取得: {len(got)}レース", flush=True)
 
-    upcoming = targets(card, day, lead_min, window_min)
+    upcoming = targets(card, day, lead_min, window_min, cache)
     if verbose:
         print(f"{now_jst():%H:%M} 対象 {len(upcoming)}レース", flush=True)
 
     updated = []
     for i, (rid, mins, post) in enumerate(upcoming):
-        # 直近2レースは連勝式まで、それ以外は単勝だけ取る
-        full = i < 2 or mins <= lead_min
-        types = (1, 2, 3, 4, 5, 6, 7, 8) if full else (1,)
-        want = ("単勝",) + COMBO_TYPES if full else ("単勝",)
+        # 表示している買い目の配当を正しく保つため、常に全式別を取り直す
+        full = True
+        types = (1, 2, 3, 4, 5, 6, 7, 8)
+        want = ("単勝",) + COMBO_TYPES
         nums = (card.loc[card["race_id"] == rid, "horse_no"]
                 .astype(int).tolist())
         try:
@@ -152,10 +181,14 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
             if tbl.get(bt):
                 entry[bt] = {"|".join(map(str, k)): v for k, v in tbl[bt].items()}
         entry["at"] = now_jst().strftime("%H:%M")
+        if mins <= FINAL_TO:
+            entry["final"] = True          # 発走後に取った値＝確定オッズ
         updated.append((rid, mins, full))
         if verbose:
             kinds = "/".join(k for k in ("単勝",) + COMBO_TYPES if k in entry)
-            print(f"  {rid} 発走まで{mins:.0f}分  {kinds}", flush=True)
+            when = ("確定オッズ" if entry.get("final")
+                    else f"発走まで{mins:.0f}分")
+            print(f"  {rid} {when}  {kinds}", flush=True)
 
     if not updated and not finished_new and not always_write:
         return None
@@ -199,6 +232,13 @@ def refresh(state_path, lead_min=15, window_min=45, sleep=0.6, verbose=True,
                             odds_tables=odds_tables,
                             meta={"date": st["date"], "venues": "中央競馬",
                                   "updated": now_jst().strftime("%H:%M")})
+    # 各レースのオッズが、いつ時点のものかを表示用に持たせる
+    for r in payload.get("races", []):
+        e = cache.get(str(r["race_id"]))
+        if isinstance(e, dict):
+            r["odds_at"] = e.get("at")
+            r["odds_final"] = bool(e.get("final"))
+
     # 発走したレースは予想を固定し、単勝オッズと着順だけ更新する
     payload = freeze_finished(payload, os.path.dirname(state_path),
                               odds_tables=odds_tables)
