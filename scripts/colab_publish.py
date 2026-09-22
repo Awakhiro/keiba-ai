@@ -116,7 +116,12 @@ def publish_to_drive(token, owner, repo, out_dir, test_start="2026-08-01",
         dst_data = os.path.join(work, "data")
         os.makedirs(dst_data, exist_ok=True)
         for f in data_files:
-            shutil.copy(os.path.join(src_data, f), os.path.join(dst_data, f))
+            src_f, dst_f = os.path.join(src_data, f), os.path.join(dst_data, f)
+            # data/ には学習済みモデルの models/ のようなフォルダもある
+            if os.path.isdir(src_f):
+                shutil.copytree(src_f, dst_f, dirs_exist_ok=True)
+            else:
+                shutil.copy(src_f, dst_f)
         print(f"データ {len(data_files)}件をコピーし、最新コードで処理します")
 
     import sys
