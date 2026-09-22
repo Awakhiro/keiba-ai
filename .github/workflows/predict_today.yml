@@ -1,14 +1,22 @@
 name: 当日の予想
 
-# 朝に1回だけ学習し、そのあとは発走が近いレースのオッズだけを取り直す。
+# 朝に予想を作り、そのあとは4分ごとにオッズを取り直してページを更新する。
+# 発走10分前を切ったレースは買い目を固定し、以後はオッズと着順だけ更新する。
 #
-# 定期実行(cron)は数分〜十数分ずれることがあるため、締切15分前という精度は出せない。
-# そこで「1つのジョブの中で時計を見ながら待つ」形にしている。
-# GitHub の1ジョブは最長6時間なので、午前と午後の2本に分ける。
+# 定期実行(cron)は混雑時に起動しないことがあるので、予備の時刻も入れてある。
+# 同時には1本しか動かず、動いている間の起動は1本だけ待機する。
+# GitHub の1ジョブは最長6時間なので、午前（〜13:10）と午後（〜16:50）に分かれる。
 on:
   schedule:
-    - cron: "0 23 * * 5,6"   # 金23:00UTC=土08:00JST / 土23:00UTC=日08:00JST
-    - cron: "0 4 * * 6,0"    # 土04:00UTC=土13:00JST / 日04:00UTC=日13:00JST
+    # 日本時間 8:00 / 8:30（土日）… 午前の回
+    - cron: "0 23 * * 5,6"
+    - cron: "30 23 * * 5,6"
+    # 日本時間 9:00 / 9:30（土日）… 午前の回が起動しなかったときの予備
+    - cron: "0 0 * * 6,0"
+    - cron: "30 0 * * 6,0"
+    # 日本時間 13:00 / 13:30（土日）… 午後の回
+    - cron: "0 4 * * 6,0"
+    - cron: "30 4 * * 6,0"
   workflow_dispatch:
     inputs:
       date:
@@ -31,74 +39,95 @@ permissions:
 jobs:
   today:
     runs-on: ubuntu-latest
-    timeout-minutes: 345
+    timeout-minutes: 350
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_PROJECT_NAME: ${{ secrets.CF_PROJECT_NAME }}
     steps:
       - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - run: pip install -q -r requirements.txt
 
       - name: 時刻と終了時刻を決める
         id: t
         run: |
-          echo "now=$(TZ=Asia/Tokyo date +%H:%M)" >> $GITHUB_OUTPUT
+          NOW=$(TZ=Asia/Tokyo date +%H%M)
           HOUR=$(TZ=Asia/Tokyo date +%H)
-          # 午前の回は13:10まで、午後の回は16:50まで動かす
           if [ -n "${{ inputs.until }}" ]; then
-            echo "until=${{ inputs.until }}" >> $GITHUB_OUTPUT
+            UNTIL="${{ inputs.until }}"
           elif [ "$HOUR" -lt 11 ]; then
-            echo "until=13:10" >> $GITHUB_OUTPUT
+            UNTIL="13:10"
           else
-            echo "until=16:50" >> $GITHUB_OUTPUT
+            UNTIL="16:50"
+          fi
+          echo "until=$UNTIL" >> $GITHUB_OUTPUT
+          # 手動実行でなく、すでに終了時刻を過ぎていれば何もしない
+          # （待機していた起動がレース後に動き出した場合など）
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$NOW" -ge "$(echo $UNTIL | tr -d :)" ]; then
+            echo "終了時刻を過ぎているので何もしません" >> $GITHUB_STEP_SUMMARY
+            echo "skip=true" >> $GITHUB_OUTPUT
           fi
           if ! ls data/races.* >/dev/null 2>&1; then
             echo "学習データがありません。先に「データ収集」を実行してください。" >> $GITHUB_STEP_SUMMARY
             echo "skip=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: 朝の予想
+      - uses: actions/setup-python@v6
+        if: steps.t.outputs.skip != 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: actions/setup-node@v5
+        if: steps.t.outputs.skip != 'true'
+        with:
+          node-version: "22"
+
+      - run: pip install -q -r requirements.txt
+        if: steps.t.outputs.skip != 'true'
+
+      - name: 予想
         id: morning
         if: steps.t.outputs.skip != 'true'
         run: |
-          set -o pipefail
           # 毎回予想を作り直す。学習は data/models に保存済みなので
           # 学習データが増えていなければ走らない。
-          # 発走済みのレースは frozen.json で予想が固定されるので変わらない。
+          # 発走10分前を切ったレースは frozen.json で買い目が固定される。
+          set -o pipefail
           python -u scripts/predict_day.py \
             --date "${{ inputs.date }}" \
             --min-grade "${{ inputs.min_grade || 'B' }}" \
             --archive 2>&1 | tee /tmp/p.log
         continue-on-error: true
 
-      - name: 初回の公開
+      - name: 初回の保存と公開
         if: steps.t.outputs.skip != 'true'
         run: |
           if [ ! -f docs/today_static.html ]; then
             echo "開催が無い日か、出馬表がまだ公開されていません。" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
+          BRANCH="${{ github.event.repository.default_branch }}"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A docs/ data/models/ 2>/dev/null || git add -A docs/
           git diff --staged --quiet || git commit -q -m "当日の予想 $(TZ=Asia/Tokyo date +%H:%M)"
-          git push -q origin HEAD:"${{ github.event.repository.default_branch || 'main' }}" || true
+          git fetch origin "${BRANCH:-main}"
+          git rebase "origin/${BRANCH:-main}" || git rebase --abort
+          git push origin HEAD:"${BRANCH:-main}" || true
+          python -c "import scripts.refresh_odds as r; r.deploy_site()"
 
-      - name: 発走前のオッズ更新
+      - name: 4分ごとのオッズ更新
         if: steps.t.outputs.skip != 'true' && hashFiles('docs/data/state.json') != ''
         run: |
           echo "### オッズ更新" >> $GITHUB_STEP_SUMMARY
           python -u scripts/refresh_odds.py \
             --loop --until "${{ steps.t.outputs.until }}" \
-            --lead 15 --window 45 --interval 4 --commit \
-            --min-grade "${{ inputs.min_grade || 'B' }}" \
-            --branch "${{ github.event.repository.default_branch || 'main' }}" 2>&1 | tee /tmp/r.log
+            --lead 15 --window 45 --interval 4 --commit --deploy \
+            --branch "${{ github.event.repository.default_branch || 'main' }}" \
+            --min-grade "${{ inputs.min_grade || 'B' }}" 2>&1 | tee /tmp/r.log
           { echo '```'; tail -40 /tmp/r.log; echo '```'; } >> $GITHUB_STEP_SUMMARY
 
-      - name: 最後にもう一度公開
+      - name: 最後にもう一度保存
         if: always() && steps.t.outputs.skip != 'true'
         run: |
           [ -d docs ] || exit 0
