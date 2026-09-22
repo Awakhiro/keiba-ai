@@ -463,6 +463,10 @@ def freeze_finished(payload, data_dir, now=None, odds_tables=None,
             _refresh_locked_odds(fr, (odds_tables or {}).get(rid))
             _rescore(fr)
             fr["frozen"] = True
+            # 買い目は固定でも、オッズはいまの値なので時点も最新にする
+            for k in ("odds_at", "odds_final"):
+                if k in r:
+                    fr[k] = r[k]
             races.append(fr)
         else:
             races.append(r)
