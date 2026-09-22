@@ -338,7 +338,7 @@ data-grade="{r['grade']}" data-conf="{r['conf']}">
 <div class="rhead"><span class="stamp g-{r['grade']}">{r['grade']}</span>
 <span><span class="rtitle">{r['venue']}{r.get('race_no') or ''}R</span>
 <div class="rmeta">{r.get('post_time','')} {r['surface']}{r['distance']}m　
-{r['field_size']}頭　自信度 {r['conf']}　{'<b style="color:var(--shu)">買い目確定</b>　' if r.get('frozen') else ''}
+{r['field_size']}頭　自信度 {r['conf']}　{'<b style="color:var(--shu)">買い目確定</b>　' if r.get('frozen') else ''}{('<span style="color:var(--ok)">確定オッズ</span>' if r.get('odds_final') else (f"オッズ {r['odds_at']}時点" if r.get('odds_at') else ''))}
 {'両モデル一致' if r.get('agree') else 'モデル割れ'}</div></span></div>
 {_rec_block(rec.get('A'), r, MODE_LABELS["A"][0], MODE_LABELS["A"][1])}
 {_rec_block(rec.get('M'), r, MODE_LABELS["M"][0], MODE_LABELS["M"][1]) if rec.get('M') else ''}
@@ -365,7 +365,8 @@ data-grade="{r['grade']}" data-conf="{r['conf']}">
 <b>中</b> 中穴 … 2着以内に6番人気以下が来たレースで学習。
 1点10倍以上・合成オッズ3倍以上<br>
 <b>穴</b> 穴 … 馬連が20倍以上だったレースで学習。1点10倍以上・合成オッズ5倍以上<br>
-<span style="color:var(--muted)">買い目は発走10分前に確定し、以後は配当と着順だけが更新されます。<br>
+<span style="color:var(--muted)">買い目は発走10分前に確定し、以後は配当と着順だけが更新されます。
+各レースに、表示しているオッズがいつ時点のものかを出しています（発走後は確定オッズ）。<br>
 合成オッズは 1 ÷（各組の 1/オッズ の合計）で計算しています。
 買い目は各100円の均等買いなので、当たったときの戻りは「当たった組のオッズ ÷ 点数」です。
 条件を満たす買い方が無いレースは、最も倍率の高い形を「基準未満」として示します。<br>
